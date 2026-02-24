@@ -38,10 +38,6 @@ static uint common_hal_i2c_write_dma(i2c_inst_t *i2c, uint8_t addr, const uint8_
     invalid_params_if(HARDWARE_I2C, ((int)len) < 0);
 
     uint dma_channel = dma_claim_unused_channel(true);
-    if (len > i2c_get_write_available(i2c)) {
-        dma_channel_unclaim(dma_channel);
-        return PICO_ERROR_INSUFFICIENT_RESOURCES;
-    }
 
     i2c->hw->enable = 0;
     i2c->hw->tar = addr;
@@ -88,10 +84,6 @@ static uint common_hal_i2c_read_dma(i2c_inst_t *i2c, uint8_t addr, uint8_t *dst,
     invalid_params_if(HARDWARE_I2C, len == 0);
     invalid_params_if(HARDWARE_I2C, ((int)len) < 0);
     uint dma_channel = dma_claim_unused_channel(true);
-
-    if (len > i2c_get_write_available(i2c)) {
-        return PICO_ERROR_INSUFFICIENT_RESOURCES;
-    }
 
     i2c->hw->enable = 0;
     i2c->hw->tar = addr;

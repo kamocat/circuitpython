@@ -18,6 +18,18 @@
 
 #if CIRCUITPY_BUSIO_DMA
 
+//| """Asynchronous DMA helpers for busio objects
+//|
+//| The `busio.dma` module provides low-level DMA helpers for `busio.I2C`,
+//| `busio.SPI`, and `busio.UART`.
+//|
+//| Each transfer function starts a DMA transaction and returns a DMA channel number.
+//| Use the corresponding ``*_is_busy()`` function with that channel to poll for
+//| completion.
+//|
+//| For I2C and SPI, the bus object must already be locked.
+//| """
+
 static mp_negative_errno_t _pico_to_mp_error(int result) {
     switch (result) {
         case PICO_ERROR_GENERIC:
@@ -50,6 +62,19 @@ static void _check_spi_lock(busio_spi_obj_t *spi) {
     }
 }
 
+//| def i2c_read(i2c: busio.I2C, address: int, buffer: WriteableBuffer, *, end: bool = False) -> int:
+//|     """Start a DMA I2C read into ``buffer`` and return the DMA channel.
+//|
+//|     The provided `busio.I2C` object must be locked before calling.
+//|
+//|     :param ~busio.I2C i2c: I2C bus object
+//|     :param int address: 7-bit I2C target address
+//|     :param ~circuitpython_typing.WriteableBuffer buffer: destination buffer
+//|     :param bool end: If ``True``, send a STOP condition at the end of the transfer
+//|     :return: DMA channel used by this transfer
+//|     :rtype: int
+//|     """
+//|
 static mp_obj_t busio_dma_i2c_read(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_i2c, ARG_address, ARG_buffer, ARG_end };
     static const mp_arg_t allowed_args[] = {
@@ -76,6 +101,19 @@ static mp_obj_t busio_dma_i2c_read(size_t n_args, const mp_obj_t *pos_args, mp_m
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(busio_dma_i2c_read_obj, 0, busio_dma_i2c_read);
 
+//| def i2c_write(i2c: busio.I2C, address: int, buffer: ReadableBuffer, *, end: bool = False) -> int:
+//|     """Start a DMA I2C write from ``buffer`` and return the DMA channel.
+//|
+//|     The provided `busio.I2C` object must be locked before calling.
+//|
+//|     :param ~busio.I2C i2c: I2C bus object
+//|     :param int address: 7-bit I2C target address
+//|     :param ~circuitpython_typing.ReadableBuffer buffer: source buffer
+//|     :param bool end: If ``True``, send a STOP condition at the end of the transfer
+//|     :return: DMA channel used by this transfer
+//|     :rtype: int
+//|     """
+//|
 static mp_obj_t busio_dma_i2c_write(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_i2c, ARG_address, ARG_buffer, ARG_end };
     static const mp_arg_t allowed_args[] = {
@@ -102,11 +140,23 @@ static mp_obj_t busio_dma_i2c_write(size_t n_args, const mp_obj_t *pos_args, mp_
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(busio_dma_i2c_write_obj, 0, busio_dma_i2c_write);
 
+//| def i2c_is_busy(dma_channel: int) -> bool:
+//|     """Return ``True`` while the I2C DMA channel is active.
+//|
+//|     :param int dma_channel: DMA channel returned by `i2c_read` or `i2c_write`
+//|     """
+//|
 static mp_obj_t busio_dma_i2c_is_busy(mp_obj_t dma_channel_obj) {
     return mp_obj_new_bool(common_hal_busio_dma_i2c_is_busy(mp_obj_get_int(dma_channel_obj)));
 }
 MP_DEFINE_CONST_FUN_OBJ_1(busio_dma_i2c_is_busy_obj, busio_dma_i2c_is_busy);
 
+//| def spi_write(spi: busio.SPI, buffer: ReadableBuffer) -> int:
+//|     """Start a DMA SPI write from ``buffer`` and return the DMA channel.
+//|
+//|     The provided `busio.SPI` object must be locked before calling.
+//|     """
+//|
 static mp_obj_t busio_dma_spi_write(mp_obj_t spi_obj, mp_obj_t buffer_obj) {
     busio_spi_obj_t *spi = mp_arg_validate_type(spi_obj, &busio_spi_type, MP_QSTR_spi);
     _check_spi_lock(spi);
@@ -119,6 +169,13 @@ static mp_obj_t busio_dma_spi_write(mp_obj_t spi_obj, mp_obj_t buffer_obj) {
 }
 MP_DEFINE_CONST_FUN_OBJ_2(busio_dma_spi_write_obj, busio_dma_spi_write);
 
+//| def spi_readinto(spi: busio.SPI, buffer: WriteableBuffer, *, write_value: int = 0) -> int:
+//|     """Start a DMA SPI read into ``buffer`` and return the DMA channel.
+//|
+//|     ``write_value`` is transmitted while reading.
+//|     The provided `busio.SPI` object must be locked before calling.
+//|     """
+//|
 static mp_obj_t busio_dma_spi_readinto(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_spi, ARG_buffer, ARG_write_value };
     static const mp_arg_t allowed_args[] = {
@@ -144,6 +201,13 @@ static mp_obj_t busio_dma_spi_readinto(size_t n_args, const mp_obj_t *pos_args, 
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(busio_dma_spi_readinto_obj, 0, busio_dma_spi_readinto);
 
+//| def spi_write_readinto(spi: busio.SPI, out_buffer: ReadableBuffer, in_buffer: WriteableBuffer) -> int:
+//|     """Start a DMA SPI write/read transfer and return the DMA channel.
+//|
+//|     ``out_buffer`` and ``in_buffer`` must have the same length.
+//|     The provided `busio.SPI` object must be locked before calling.
+//|     """
+//|
 static mp_obj_t busio_dma_spi_write_readinto(mp_obj_t spi_obj, mp_obj_t out_buffer_obj, mp_obj_t in_buffer_obj) {
     busio_spi_obj_t *spi = mp_arg_validate_type(spi_obj, &busio_spi_type, MP_QSTR_spi);
     _check_spi_lock(spi);
@@ -163,11 +227,20 @@ static mp_obj_t busio_dma_spi_write_readinto(mp_obj_t spi_obj, mp_obj_t out_buff
 }
 MP_DEFINE_CONST_FUN_OBJ_3(busio_dma_spi_write_readinto_obj, busio_dma_spi_write_readinto);
 
+//| def spi_is_busy(dma_channel: int) -> bool:
+//|     """Return ``True`` while the SPI DMA channel is active.
+//|
+//|     :param int dma_channel: DMA channel returned by SPI DMA transfer functions
+//|     """
+//|
 static mp_obj_t busio_dma_spi_is_busy(mp_obj_t dma_channel_obj) {
     return mp_obj_new_bool(common_hal_busio_dma_spi_is_busy(mp_obj_get_int(dma_channel_obj)));
 }
 MP_DEFINE_CONST_FUN_OBJ_1(busio_dma_spi_is_busy_obj, busio_dma_spi_is_busy);
 
+//| def uart_readinto(uart: busio.UART, buffer: WriteableBuffer) -> int:
+//|     """Start a DMA UART read into ``buffer`` and return the DMA channel."""
+//|
 static mp_obj_t busio_dma_uart_readinto(mp_obj_t uart_obj, mp_obj_t buffer_obj) {
     busio_uart_obj_t *uart = mp_arg_validate_type(uart_obj, &busio_uart_type, MP_QSTR_uart);
 
@@ -179,6 +252,9 @@ static mp_obj_t busio_dma_uart_readinto(mp_obj_t uart_obj, mp_obj_t buffer_obj) 
 }
 MP_DEFINE_CONST_FUN_OBJ_2(busio_dma_uart_readinto_obj, busio_dma_uart_readinto);
 
+//| def uart_write(uart: busio.UART, buffer: ReadableBuffer) -> int:
+//|     """Start a DMA UART write from ``buffer`` and return the DMA channel."""
+//|
 static mp_obj_t busio_dma_uart_write(mp_obj_t uart_obj, mp_obj_t buffer_obj) {
     busio_uart_obj_t *uart = mp_arg_validate_type(uart_obj, &busio_uart_type, MP_QSTR_uart);
 
@@ -190,6 +266,12 @@ static mp_obj_t busio_dma_uart_write(mp_obj_t uart_obj, mp_obj_t buffer_obj) {
 }
 MP_DEFINE_CONST_FUN_OBJ_2(busio_dma_uart_write_obj, busio_dma_uart_write);
 
+//| def uart_is_busy(dma_channel: int) -> bool:
+//|     """Return ``True`` while the UART DMA channel is active.
+//|
+//|     :param int dma_channel: DMA channel returned by `uart_readinto` or `uart_write`
+//|     """
+//|
 static mp_obj_t busio_dma_uart_is_busy(mp_obj_t dma_channel_obj) {
     return mp_obj_new_bool(common_hal_busio_dma_uart_is_busy(mp_obj_get_int(dma_channel_obj)));
 }
