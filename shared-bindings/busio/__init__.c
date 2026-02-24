@@ -11,6 +11,9 @@
 
 #include "shared-bindings/microcontroller/Pin.h"
 #include "shared-bindings/busio/__init__.h"
+#if CIRCUITPY_BUSIO_DMA
+#include "shared-bindings/busio/dma.h"
+#endif
 #include "shared-bindings/busio/I2C.h"
 #include "shared-bindings/busio/SPI.h"
 #include "shared-bindings/busio/UART.h"
@@ -67,6 +70,9 @@
 static const mp_rom_map_elem_t busio_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_busio) },
     { MP_ROM_QSTR(MP_QSTR_I2C),   MP_ROM_PTR(&busio_i2c_type) },
+#if CIRCUITPY_BUSIO_DMA
+    { MP_ROM_QSTR(MP_QSTR_dma), MP_ROM_PTR(&busio_dma_module) },
+#endif
     { MP_ROM_QSTR(MP_QSTR_SPI),   MP_ROM_PTR(&busio_spi_type) },
     { MP_ROM_QSTR(MP_QSTR_UART),   MP_ROM_PTR(&busio_uart_type) },
 };
