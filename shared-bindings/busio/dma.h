@@ -8,6 +8,8 @@
 
 #include "py/obj.h"
 
+#if CIRCUITPY_BUSIO_DMA
+
 #include "common-hal/busio/I2C.h"
 #include "common-hal/busio/SPI.h"
 #include "common-hal/busio/UART.h"
@@ -25,4 +27,4 @@ uint common_hal_busio_dma_uart_read(busio_uart_obj_t *uart, uint8_t *data, size_
 uint common_hal_busio_dma_uart_write(busio_uart_obj_t *uart, const uint8_t *data, size_t len);
 bool common_hal_busio_dma_uart_is_busy(uint dma_channel);
 
-extern const mp_obj_module_t busio_dma_module;
+#endif

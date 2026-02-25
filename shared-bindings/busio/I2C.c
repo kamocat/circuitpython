@@ -9,6 +9,7 @@
 
 #include "shared-bindings/microcontroller/Pin.h"
 #include "shared-bindings/busio/I2C.h"
+#include "shared-bindings/busio/dma.h"
 #include "shared-bindings/util.h"
 
 #include "shared/runtime/buffer_helper.h"
@@ -111,6 +112,97 @@ static void check_lock(busio_i2c_obj_t *self) {
         mp_raise_RuntimeError(MP_ERROR_TEXT("Function requires lock"));
     }
 }
+
+#if CIRCUITPY_BUSIO_DMA
+//|     def dma_readinto(self, address: int, buffer: WriteableBuffer, *, end: bool = False) -> int:
+//|         """Start a DMA I2C read into ``buffer`` and return the DMA channel.
+//|
+//|         The I2C object must be locked before calling.
+//|
+//|         :param int address: 7-bit I2C target address
+//|         :param ~circuitpython_typing.WriteableBuffer buffer: destination buffer
+//|         :param bool end: If ``True``, send a STOP condition at the end of the transfer
+//|         :return: DMA channel used by this transfer
+//|         :rtype: int
+//|         """
+//|
+static mp_obj_t busio_i2c_dma_read(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_address, ARG_buffer, ARG_end };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_address, MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_buffer, MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_end, MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
+    };
+
+    busio_i2c_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    check_for_deinit(self);
+    check_lock(self);
+
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    mp_int_t address = args[ARG_address].u_int;
+    mp_arg_validate_int_range(address, 0, 0x7f, MP_QSTR_address);
+
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(args[ARG_buffer].u_obj, &bufinfo, MP_BUFFER_WRITE);
+
+    uint dma_channel = common_hal_busio_dma_i2c_read(self, address, bufinfo.buf, bufinfo.len, args[ARG_end].u_bool);
+    return mp_obj_new_int_from_uint(dma_channel);
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(busio_i2c_dma_read_obj, 1, busio_i2c_dma_read);
+
+//|     def dma_write(self, address: int, buffer: ReadableBuffer, *, end: bool = False) -> int:
+//|         """Start a DMA I2C write from ``buffer`` and return the DMA channel.
+//|
+//|         The I2C object must be locked before calling.
+//|
+//|         :param int address: 7-bit I2C target address
+//|         :param ~circuitpython_typing.ReadableBuffer buffer: source buffer
+//|         :param bool end: If ``True``, send a STOP condition at the end of the transfer
+//|         :return: DMA channel used by this transfer
+//|         :rtype: int
+//|         """
+//|
+static mp_obj_t busio_i2c_dma_write(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_address, ARG_buffer, ARG_end };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_address, MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_buffer, MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_end, MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
+    };
+
+    busio_i2c_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    check_for_deinit(self);
+    check_lock(self);
+
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    mp_int_t address = args[ARG_address].u_int;
+    mp_arg_validate_int_range(address, 0, 0x7f, MP_QSTR_address);
+
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(args[ARG_buffer].u_obj, &bufinfo, MP_BUFFER_READ);
+
+    uint dma_channel = common_hal_busio_dma_i2c_write(self, address, bufinfo.buf, bufinfo.len, args[ARG_end].u_bool);
+    return mp_obj_new_int_from_uint(dma_channel);
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(busio_i2c_dma_write_obj, 1, busio_i2c_dma_write);
+
+//|     def dma_is_busy(self, dma_channel: int) -> bool:
+//|         """Return ``True`` while the I2C DMA channel is active.
+//|
+//|         :param int dma_channel: DMA channel returned by `dma_readinto` or `dma_write`
+//|         """
+//|
+static mp_obj_t busio_i2c_dma_is_busy(mp_obj_t self_in, mp_obj_t dma_channel_obj) {
+    busio_i2c_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    check_for_deinit(self);
+    return mp_obj_new_bool(common_hal_busio_dma_i2c_is_busy(mp_obj_get_int(dma_channel_obj)));
+}
+MP_DEFINE_CONST_FUN_OBJ_2(busio_i2c_dma_is_busy_obj, busio_i2c_dma_is_busy);
+#endif
 
 //|     def probe(self, address: int) -> List[int]:
 //|         """Check if a device at the specified address responds.
@@ -403,6 +495,11 @@ static const mp_rom_map_elem_t busio_i2c_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_readfrom_into), MP_ROM_PTR(&busio_i2c_readfrom_into_obj) },
     { MP_ROM_QSTR(MP_QSTR_writeto), MP_ROM_PTR(&busio_i2c_writeto_obj) },
     { MP_ROM_QSTR(MP_QSTR_writeto_then_readfrom), MP_ROM_PTR(&busio_i2c_writeto_then_readfrom_obj) },
+    #if CIRCUITPY_BUSIO_DMA
+    { MP_ROM_QSTR(MP_QSTR_dma_readinto), MP_ROM_PTR(&busio_i2c_dma_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_dma_write), MP_ROM_PTR(&busio_i2c_dma_write_obj) },
+    { MP_ROM_QSTR(MP_QSTR_dma_is_busy), MP_ROM_PTR(&busio_i2c_dma_is_busy_obj) },
+    #endif
     #endif // CIRCUITPY_BUSIO_I2C
 };
 
