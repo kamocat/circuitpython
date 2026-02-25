@@ -153,6 +153,14 @@ static void check_for_deinit(busio_spi_obj_t *self) {
     }
 }
 
+static busio_spi_obj_t *native_spi(mp_obj_t spi_obj) {
+    mp_obj_t native_spi = mp_obj_cast_to_native_base(spi_obj, MP_OBJ_FROM_PTR(&busio_spi_type));
+    if (native_spi == MP_OBJ_NULL) {
+        mp_raise_ValueError_varg(MP_ERROR_TEXT("Must be a %q subclass."), MP_QSTR_SPI);
+    }
+    return MP_OBJ_TO_PTR(native_spi);
+}
+
 #if CIRCUITPY_BUSIO_DMA
 //|     def dma_write(self, buffer: ReadableBuffer) -> int:
 //|         """Start a DMA SPI write from ``buffer`` and return the DMA channel.
@@ -161,7 +169,7 @@ static void check_for_deinit(busio_spi_obj_t *self) {
 //|         """
 //|
 static mp_obj_t busio_spi_dma_write(mp_obj_t self_in, mp_obj_t buffer_obj) {
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    busio_spi_obj_t *self = native_spi(self_in);
     check_for_deinit(self);
     check_lock(self);
 
@@ -187,7 +195,7 @@ static mp_obj_t busio_spi_dma_readinto(size_t n_args, const mp_obj_t *pos_args, 
         { MP_QSTR_write_value, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
     };
 
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    busio_spi_obj_t *self = native_spi(pos_args[0]);
     check_for_deinit(self);
     check_lock(self);
 
@@ -213,7 +221,7 @@ MP_DEFINE_CONST_FUN_OBJ_KW(busio_spi_dma_readinto_obj, 1, busio_spi_dma_readinto
 //|         """
 //|
 static mp_obj_t busio_spi_dma_write_readinto(mp_obj_t self_in, mp_obj_t out_buffer_obj, mp_obj_t in_buffer_obj) {
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    busio_spi_obj_t *self = native_spi(self_in);
     check_for_deinit(self);
     check_lock(self);
 
@@ -239,7 +247,7 @@ MP_DEFINE_CONST_FUN_OBJ_3(busio_spi_dma_write_readinto_obj, busio_spi_dma_write_
 //|         """
 //|
 static mp_obj_t busio_spi_dma_is_busy(mp_obj_t self_in, mp_obj_t dma_channel_obj) {
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    busio_spi_obj_t *self = native_spi(self_in);
     check_for_deinit(self);
     return mp_obj_new_bool(common_hal_busio_dma_spi_is_busy(mp_obj_get_int(dma_channel_obj)));
 }
@@ -280,7 +288,7 @@ static mp_obj_t busio_spi_configure(size_t n_args, const mp_obj_t *pos_args, mp_
         { MP_QSTR_phase, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
         { MP_QSTR_bits, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 8} },
     };
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    busio_spi_obj_t *self = native_spi(pos_args[0]);
     check_for_deinit(self);
     check_lock(self);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -307,7 +315,7 @@ MP_DEFINE_CONST_FUN_OBJ_KW(busio_spi_configure_obj, 1, busio_spi_configure);
 //|
 
 static mp_obj_t busio_spi_obj_try_lock(mp_obj_t self_in) {
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    busio_spi_obj_t *self = native_spi(self_in);
     return mp_obj_new_bool(common_hal_busio_spi_try_lock(self));
 }
 MP_DEFINE_CONST_FUN_OBJ_1(busio_spi_try_lock_obj, busio_spi_obj_try_lock);
@@ -318,7 +326,7 @@ MP_DEFINE_CONST_FUN_OBJ_1(busio_spi_try_lock_obj, busio_spi_obj_try_lock);
 //|
 
 static mp_obj_t busio_spi_obj_unlock(mp_obj_t self_in) {
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    busio_spi_obj_t *self = native_spi(self_in);
     check_for_deinit(self);
     common_hal_busio_spi_unlock(self);
     return mp_const_none;
@@ -349,7 +357,7 @@ static mp_obj_t busio_spi_write(size_t n_args, const mp_obj_t *pos_args, mp_map_
         { MP_QSTR_start,      MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
         { MP_QSTR_end,        MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = INT_MAX} },
     };
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    busio_spi_obj_t *self = native_spi(pos_args[0]);
     check_for_deinit(self);
     check_lock(self);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -416,7 +424,7 @@ static mp_obj_t busio_spi_readinto(size_t n_args, const mp_obj_t *pos_args, mp_m
         { MP_QSTR_end,        MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = INT_MAX} },
         { MP_QSTR_write_value, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
     };
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    busio_spi_obj_t *self = native_spi(pos_args[0]);
     check_for_deinit(self);
     check_lock(self);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -493,7 +501,7 @@ static mp_obj_t busio_spi_write_readinto(size_t n_args, const mp_obj_t *pos_args
         { MP_QSTR_in_start,      MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
         { MP_QSTR_in_end,        MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = INT_MAX} },
     };
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    busio_spi_obj_t *self = native_spi(pos_args[0]);
     check_for_deinit(self);
     check_lock(self);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -545,7 +553,7 @@ MP_DEFINE_CONST_FUN_OBJ_KW(busio_spi_write_readinto_obj, 1, busio_spi_write_read
 //|
 
 static mp_obj_t busio_spi_obj_get_frequency(mp_obj_t self_in) {
-    busio_spi_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    busio_spi_obj_t *self = native_spi(self_in);
     check_for_deinit(self);
     return MP_OBJ_NEW_SMALL_INT(common_hal_busio_spi_get_frequency(self));
 }
