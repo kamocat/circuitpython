@@ -18,6 +18,19 @@
 
 static spi_device_handle_t spi_handle[SOC_SPI_PERIPH_NUM];
 
+#if CIRCUITPY_BUSIO_NOBLOCK
+struct spi_transfer_state {
+    busio_spi_obj_t *spi;
+    const uint8_t *out_data;
+    uint8_t *in_data;
+    size_t len;
+    bool kicked;
+    bool active;
+};
+
+static struct spi_transfer_state spi_noblock_state;
+#endif
+
 static bool spi_bus_is_free(spi_host_device_t host_id) {
     return spi_bus_get_attr(host_id) == NULL;
 }
@@ -286,3 +299,39 @@ uint8_t common_hal_busio_spi_get_polarity(busio_spi_obj_t *self) {
 uint8_t common_hal_busio_spi_get_phase(busio_spi_obj_t *self) {
     return self->phase;
 }
+
+#if CIRCUITPY_BUSIO_NOBLOCK
+spi_transfer_state *common_hal_busio_spi_start_transfer(busio_spi_obj_t *spi, const uint8_t *out_data, uint8_t *in_data, size_t len) {
+    if (out_data == NULL && in_data == NULL) {
+        return NULL;
+    }
+    if (spi_noblock_state.active) {
+        mp_raise_RuntimeError(MP_ERROR_TEXT("transfer already active"));
+    }
+    spi_noblock_state.spi = spi;
+    spi_noblock_state.out_data = out_data;
+    spi_noblock_state.in_data = in_data;
+    spi_noblock_state.len = len;
+    spi_noblock_state.kicked = false;
+    spi_noblock_state.active = true;
+    return &spi_noblock_state;
+}
+
+bool common_hal_busio_spi_transfer_isbusy(spi_transfer_state *state) {
+    if (state == NULL || !state->active) {
+        return false;
+    }
+
+    if (!state->kicked) {
+        state->kicked = true;
+        return true;
+    }
+
+    bool ok = common_hal_busio_spi_transfer(state->spi, state->out_data, state->in_data, state->len);
+    state->active = false;
+    if (!ok) {
+        mp_raise_OSError(MP_EIO);
+    }
+    return false;
+}
+#endif

@@ -3792,6 +3792,10 @@ msgstr ""
 msgid "no such attribute"
 msgstr ""
 
+#: ports/espressif/common-hal/busio/I2C.c
+msgid "no-stop transfers not supported"
+msgstr ""
+
 #: ports/espressif/common-hal/_bleio/Connection.c
 #: ports/nordic/common-hal/_bleio/Connection.c
 msgid "non-UUID found in service_uuids_whitelist"
@@ -4340,6 +4344,12 @@ msgstr ""
 #: py/runtime.c
 #, c-format
 msgid "too many values to unpack (expected %d)"
+msgstr ""
+
+#: ports/espressif/common-hal/busio/I2C.c
+#: ports/espressif/common-hal/busio/SPI.c
+#: ports/espressif/common-hal/busio/UART.c
+msgid "transfer already active"
 msgstr ""
 
 #: extmod/ulab/code/numpy/approx.c

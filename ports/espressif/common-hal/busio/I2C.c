@@ -15,6 +15,38 @@
 #include "shared-bindings/microcontroller/__init__.h"
 #include "shared-bindings/microcontroller/Pin.h"
 
+#if CIRCUITPY_BUSIO_NOBLOCK
+struct i2c_transfer_state {
+    busio_i2c_obj_t *i2c;
+    uint8_t address;
+    uint8_t *read_data;
+    const uint8_t *write_data;
+    size_t len;
+    bool nostop;
+    bool kicked;
+    bool active;
+    mp_negative_errno_t result;
+};
+
+static struct i2c_transfer_state i2c_noblock_state;
+
+static i2c_transfer_state *common_hal_i2c_prepare_state(busio_i2c_obj_t *i2c, uint8_t address, uint8_t *read_data, const uint8_t *write_data, size_t len, bool nostop) {
+    if (i2c_noblock_state.active) {
+        mp_raise_RuntimeError(MP_ERROR_TEXT("transfer already active"));
+    }
+    i2c_noblock_state.i2c = i2c;
+    i2c_noblock_state.address = address;
+    i2c_noblock_state.read_data = read_data;
+    i2c_noblock_state.write_data = write_data;
+    i2c_noblock_state.len = len;
+    i2c_noblock_state.nostop = nostop;
+    i2c_noblock_state.kicked = false;
+    i2c_noblock_state.active = true;
+    i2c_noblock_state.result = 0;
+    return &i2c_noblock_state;
+}
+#endif
+
 void common_hal_busio_i2c_construct(busio_i2c_obj_t *self,
     const mcu_pin_obj_t *scl, const mcu_pin_obj_t *sda, uint32_t frequency, uint32_t timeout_us) {
 
@@ -237,3 +269,49 @@ void common_hal_busio_i2c_never_reset(busio_i2c_obj_t *self) {
     common_hal_never_reset_pin(self->scl_pin);
     common_hal_never_reset_pin(self->sda_pin);
 }
+
+#if CIRCUITPY_BUSIO_NOBLOCK
+i2c_transfer_state *common_hal_busio_i2c_start_read(busio_i2c_obj_t *i2c, uint8_t address, uint8_t *data, size_t len, bool nostop) {
+    return common_hal_i2c_prepare_state(i2c, address, data, NULL, len, nostop);
+}
+
+i2c_transfer_state *common_hal_busio_i2c_start_write(busio_i2c_obj_t *i2c, uint8_t address, const uint8_t *data, size_t len, bool nostop) {
+    return common_hal_i2c_prepare_state(i2c, address, NULL, data, len, nostop);
+}
+
+static bool common_hal_busio_i2c_isbusy(i2c_transfer_state *state) {
+    if (state == NULL || !state->active) {
+        return false;
+    }
+
+    if (!state->kicked) {
+        state->kicked = true;
+        return true;
+    }
+
+    if (state->nostop) {
+        state->active = false;
+        mp_raise_NotImplementedError(MP_ERROR_TEXT("no-stop transfers not supported"));
+    }
+
+    if (state->write_data != NULL) {
+        state->result = common_hal_busio_i2c_write(state->i2c, state->address, state->write_data, state->len);
+    } else {
+        state->result = common_hal_busio_i2c_read(state->i2c, state->address, state->read_data, state->len);
+    }
+
+    state->active = false;
+    if (state->result < 0) {
+        mp_raise_OSError(-state->result);
+    }
+    return false;
+}
+
+bool common_hal_busio_i2c_read_isbusy(i2c_transfer_state *state) {
+    return common_hal_busio_i2c_isbusy(state);
+}
+
+bool common_hal_busio_i2c_write_isbusy(i2c_transfer_state *state) {
+    return common_hal_busio_i2c_isbusy(state);
+}
+#endif

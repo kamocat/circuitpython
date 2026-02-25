@@ -22,6 +22,18 @@
 
 static uint8_t never_reset_uart_mask = 0;
 
+#if CIRCUITPY_BUSIO_NOBLOCK
+struct uart_transfer_state {
+    busio_uart_obj_t *uart;
+    const uint8_t *data;
+    size_t len;
+    size_t offset;
+    bool active;
+};
+
+static struct uart_transfer_state uart_noblock_state;
+#endif
+
 static void uart_event_task(void *param) {
     busio_uart_obj_t *self = param;
     uart_event_t event;
@@ -420,3 +432,44 @@ bool common_hal_busio_uart_ready_to_tx(busio_uart_obj_t *self) {
     }
     return uart_wait_tx_done(self->uart_num, 0) != ESP_ERR_TIMEOUT;
 }
+
+#if CIRCUITPY_BUSIO_NOBLOCK
+uart_transfer_state *common_hal_busio_uart_start_write(busio_uart_obj_t *uart, const uint8_t *data, size_t len) {
+    if (uart_noblock_state.active) {
+        mp_raise_RuntimeError(MP_ERROR_TEXT("transfer already active"));
+    }
+    uart_noblock_state.uart = uart;
+    uart_noblock_state.data = data;
+    uart_noblock_state.len = len;
+    uart_noblock_state.offset = 0;
+    uart_noblock_state.active = true;
+    return &uart_noblock_state;
+}
+
+bool common_hal_busio_uart_write_isbusy(uart_transfer_state *state) {
+    if (state == NULL || !state->active) {
+        return false;
+    }
+
+    while (state->offset < state->len) {
+        int count = uart_tx_chars(state->uart->uart_num,
+            (const char *)(state->data + state->offset),
+            state->len - state->offset);
+        if (count < 0) {
+            state->active = false;
+            mp_raise_OSError(MP_EAGAIN);
+        }
+        if (count == 0) {
+            return true;
+        }
+        state->offset += count;
+    }
+
+    if (uart_wait_tx_done(state->uart->uart_num, 0) == ESP_ERR_TIMEOUT) {
+        return true;
+    }
+
+    state->active = false;
+    return false;
+}
+#endif
