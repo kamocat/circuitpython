@@ -11,11 +11,18 @@
 #include "hardware/spi.h"
 #include "hardware/uart.h"
 
+#include <string.h>
+
+#include "py/runtime.h"
+#include "supervisor/port.h"
+
 typedef struct {
-    bool write_pending_last;
+    uint paired_dma_channel;
+    bool pending_last_command;
     i2c_inst_t *i2c;
-    uint8_t last_byte;
-    bool nostop;
+    uint8_t *tx_copy;
+    uint32_t repeated_command;
+    uint32_t last_command;
 } i2c_dma_channel_state_t;
 
 typedef struct {
@@ -43,16 +50,20 @@ static uint common_hal_i2c_write_dma(i2c_inst_t *i2c, uint8_t addr, const uint8_
     i2c->hw->tar = addr;
     i2c->hw->enable = 1;
 
-    i2c_dma_channel_state[dma_channel].write_pending_last = false;
+    i2c_dma_channel_state[dma_channel].paired_dma_channel = NUM_DMA_CHANNELS;
+    i2c_dma_channel_state[dma_channel].pending_last_command = false;
     i2c_dma_channel_state[dma_channel].i2c = i2c;
-    i2c_dma_channel_state[dma_channel].last_byte = 0;
-    i2c_dma_channel_state[dma_channel].nostop = nostop;
+    i2c_dma_channel_state[dma_channel].tx_copy = NULL;
+    i2c_dma_channel_state[dma_channel].repeated_command = 0;
+    i2c_dma_channel_state[dma_channel].last_command = 0;
 
     if (len == 1) {
-        i2c->hw->data_cmd =
+        uint32_t command =
             bool_to_bit(i2c->restart_on_next) << I2C_IC_DATA_CMD_RESTART_LSB |
             bool_to_bit(!nostop) << I2C_IC_DATA_CMD_STOP_LSB |
             src[0];
+        i2c->hw->data_cmd = command;
+        i2c_dma_channel_state[dma_channel].last_command = command;
         i2c->restart_on_next = nostop;
         return dma_channel;
     }
@@ -63,17 +74,27 @@ static uint common_hal_i2c_write_dma(i2c_inst_t *i2c, uint8_t addr, const uint8_
 
     size_t middle_len = len - 2;
     if (middle_len > 0) {
+        i2c_dma_channel_state[dma_channel].tx_copy = port_malloc(middle_len, true);
+        if (i2c_dma_channel_state[dma_channel].tx_copy == NULL) {
+            dma_channel_unclaim(dma_channel);
+            m_malloc_fail(middle_len);
+        }
+        memcpy(i2c_dma_channel_state[dma_channel].tx_copy, src + 1, middle_len);
+
         dma_channel_config config = dma_channel_get_default_config(dma_channel);
         channel_config_set_transfer_data_size(&config, DMA_SIZE_8);
         channel_config_set_read_increment(&config, true);
         channel_config_set_write_increment(&config, false);
         channel_config_set_dreq(&config, I2C_DREQ_NUM(i2c, true));
 
-        dma_channel_configure(dma_channel, &config, &i2c->hw->data_cmd, src + 1, middle_len, true);
+        dma_channel_configure(dma_channel, &config, &i2c->hw->data_cmd,
+            i2c_dma_channel_state[dma_channel].tx_copy, middle_len, true);
     }
 
-    i2c_dma_channel_state[dma_channel].write_pending_last = true;
-    i2c_dma_channel_state[dma_channel].last_byte = src[len - 1];
+    i2c_dma_channel_state[dma_channel].pending_last_command = true;
+    i2c_dma_channel_state[dma_channel].last_command =
+        bool_to_bit(!nostop) << I2C_IC_DATA_CMD_STOP_LSB |
+        src[len - 1];
     i2c->restart_on_next = nostop;
     return dma_channel;
 }
@@ -83,32 +104,63 @@ static uint common_hal_i2c_read_dma(i2c_inst_t *i2c, uint8_t addr, uint8_t *dst,
     invalid_params_if(HARDWARE_I2C, i2c_reserved_addr(addr));
     invalid_params_if(HARDWARE_I2C, len == 0);
     invalid_params_if(HARDWARE_I2C, ((int)len) < 0);
-    uint dma_channel = dma_claim_unused_channel(true);
+    uint tx_dma_channel = dma_claim_unused_channel(true);
+    uint rx_dma_channel = dma_claim_unused_channel(true);
 
     i2c->hw->enable = 0;
     i2c->hw->tar = addr;
     i2c->hw->enable = 1;
 
-    dma_channel_config config = dma_channel_get_default_config(dma_channel);
-    channel_config_set_transfer_data_size(&config, DMA_SIZE_8);
-    channel_config_set_read_increment(&config, false);
-    channel_config_set_write_increment(&config, true);
-    channel_config_set_dreq(&config, I2C_DREQ_NUM(i2c, false));
+    i2c_dma_channel_state[tx_dma_channel].paired_dma_channel = rx_dma_channel;
+    i2c_dma_channel_state[tx_dma_channel].pending_last_command = false;
+    i2c_dma_channel_state[tx_dma_channel].i2c = i2c;
+    i2c_dma_channel_state[tx_dma_channel].tx_copy = NULL;
+    i2c_dma_channel_state[tx_dma_channel].repeated_command = 0;
+    i2c_dma_channel_state[tx_dma_channel].last_command = 0;
 
-    dma_channel_configure(dma_channel, &config, dst, &i2c->hw->data_cmd, len, true);
+    dma_channel_config rx_config = dma_channel_get_default_config(rx_dma_channel);
+    channel_config_set_transfer_data_size(&rx_config, DMA_SIZE_8);
+    channel_config_set_read_increment(&rx_config, false);
+    channel_config_set_write_increment(&rx_config, true);
+    channel_config_set_dreq(&rx_config, I2C_DREQ_NUM(i2c, false));
 
-    for (size_t byte_ctr = 0; byte_ctr < len; ++byte_ctr) {
-        bool first = byte_ctr == 0;
-        bool last = byte_ctr == len - 1;
+    dma_channel_configure(rx_dma_channel, &rx_config, dst, &i2c->hw->data_cmd, len, true);
 
-        i2c->hw->data_cmd =
-            bool_to_bit(first && i2c->restart_on_next) << I2C_IC_DATA_CMD_RESTART_LSB |
-            bool_to_bit(last && !nostop) << I2C_IC_DATA_CMD_STOP_LSB |
-            I2C_IC_DATA_CMD_CMD_BITS; // -> 1 for read
+    uint32_t first_command =
+        bool_to_bit(i2c->restart_on_next) << I2C_IC_DATA_CMD_RESTART_LSB |
+        I2C_IC_DATA_CMD_CMD_BITS;
+    uint32_t middle_command = I2C_IC_DATA_CMD_CMD_BITS;
+    uint32_t last_command =
+        bool_to_bit(!nostop) << I2C_IC_DATA_CMD_STOP_LSB |
+        I2C_IC_DATA_CMD_CMD_BITS;
+
+    if (len == 1) {
+        uint32_t command = first_command | last_command;
+        i2c->hw->data_cmd = command;
+        i2c_dma_channel_state[tx_dma_channel].last_command = command;
+    } else {
+        i2c->hw->data_cmd = first_command;
+
+        size_t middle_len = len - 2;
+        if (middle_len > 0) {
+            dma_channel_config tx_config = dma_channel_get_default_config(tx_dma_channel);
+            channel_config_set_transfer_data_size(&tx_config, DMA_SIZE_32);
+            channel_config_set_read_increment(&tx_config, false);
+            channel_config_set_write_increment(&tx_config, false);
+            channel_config_set_dreq(&tx_config, I2C_DREQ_NUM(i2c, true));
+
+            i2c_dma_channel_state[tx_dma_channel].repeated_command = middle_command;
+
+            dma_channel_configure(tx_dma_channel, &tx_config, &i2c->hw->data_cmd,
+                &i2c_dma_channel_state[tx_dma_channel].repeated_command, middle_len, true);
+        }
+
+        i2c_dma_channel_state[tx_dma_channel].pending_last_command = true;
+        i2c_dma_channel_state[tx_dma_channel].last_command = last_command;
     }
 
     i2c->restart_on_next = nostop;
-    return dma_channel;
+    return tx_dma_channel;
 }
 
 static bool common_hal_i2c_dma_is_busy(uint dma_channel) {
@@ -117,18 +169,43 @@ static bool common_hal_i2c_dma_is_busy(uint dma_channel) {
     }
 
     i2c_dma_channel_state_t *state = &i2c_dma_channel_state[dma_channel];
-    if (state->write_pending_last) {
+    if (state->pending_last_command) {
         if (!i2c_get_write_available(state->i2c)) {
             return true;
         }
 
-        state->i2c->hw->data_cmd =
-            bool_to_bit(!state->nostop) << I2C_IC_DATA_CMD_STOP_LSB |
-            state->last_byte;
-        state->write_pending_last = false;
-        state->i2c = NULL;
+        state->i2c->hw->data_cmd = state->last_command;
+        state->pending_last_command = false;
         return true;
     }
+
+    uint paired_dma_channel = state->paired_dma_channel;
+    if (paired_dma_channel < NUM_DMA_CHANNELS && dma_channel_is_busy(paired_dma_channel)) {
+        return true;
+    }
+
+    if (paired_dma_channel < NUM_DMA_CHANNELS) {
+        dma_channel_unclaim(paired_dma_channel);
+        state->paired_dma_channel = NUM_DMA_CHANNELS;
+    }
+
+    if (!(state->i2c->hw->raw_intr_stat & I2C_IC_RAW_INTR_STAT_TX_EMPTY_BITS)) {
+        return true;
+    }
+
+    if (state->last_command & I2C_IC_DATA_CMD_STOP_BITS) {
+        if (!(state->i2c->hw->raw_intr_stat & I2C_IC_RAW_INTR_STAT_STOP_DET_BITS)) {
+            return true;
+        }
+        state->i2c->hw->clr_stop_det;
+    }
+
+    if (state->tx_copy != NULL) {
+        port_free(state->tx_copy);
+        state->tx_copy = NULL;
+    }
+
+    state->i2c = NULL;
 
     dma_channel_unclaim(dma_channel);
     return false;
