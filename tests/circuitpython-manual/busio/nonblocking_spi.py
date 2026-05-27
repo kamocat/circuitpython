@@ -30,6 +30,14 @@ import time
 LONG_TRANSFER_LEN = 4096
 
 
+def wait_for_unlock(spi, timeout_s=1.0):
+    deadline = time.monotonic() + timeout_s
+    while not spi.try_lock():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("timed out waiting for spi lock")
+        time.sleep(0.001)
+
+
 def wait_for_done(spi, state, timeout_s=1.0):
     deadline = time.monotonic() + timeout_s
     while spi.transfer_is_busy(state):
@@ -62,8 +70,7 @@ def main():
         return
 
     spi = busio.SPI(sck, MOSI=mosi, MISO=miso)
-    while not spi.try_lock():
-        pass
+    wait_for_unlock(spi)
 
     try:
         spi.configure(baudrate=500000, polarity=0, phase=0)
