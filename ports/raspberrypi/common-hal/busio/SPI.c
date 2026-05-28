@@ -400,20 +400,3 @@ uint8_t common_hal_busio_spi_get_phase(busio_spi_obj_t *self) {
 uint8_t common_hal_busio_spi_get_polarity(busio_spi_obj_t *self) {
     return self->polarity;
 }
-
-spi_transfer_state *common_hal_busio_spi_start_transfer(busio_spi_obj_t *spi, const uint8_t *out_data, uint8_t *in_data, size_t len) {
-    if (out_data == NULL && in_data == NULL) {
-        return NULL;
-    }
-    if (out_data == NULL) {
-        return common_hal_spi_read_dma(spi->peripheral, 0, in_data, len);
-    }
-    if (in_data == NULL) {
-        return common_hal_spi_write_dma(spi->peripheral, out_data, len);
-    }
-    return common_hal_spi_write_read_dma(spi->peripheral, out_data, in_data, len);
-}
-
-bool common_hal_busio_spi_transfer_isbusy(spi_transfer_state *state) {
-    return common_hal_spi_dma_is_busy(state);
-}
