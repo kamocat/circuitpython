@@ -241,7 +241,7 @@ static mp_obj_t abusio_spi_readinto(size_t n_args, const mp_obj_t *pos_args, mp_
     size_t length = bufinfo.len;
     normalize_buffer_bounds(&start, args[ARG_end].u_int, &length);
 
-    mp_obj_t slice = mp_obj_new_memoryview('B', length,
+    mp_obj_t slice = mp_obj_new_memoryview('B' | MP_OBJ_ARRAY_TYPECODE_FLAG_RW, length,
         (uint8_t *)bufinfo.buf + start);
     mp_obj_t tuple_items[3] = {
         pos_args[0],
