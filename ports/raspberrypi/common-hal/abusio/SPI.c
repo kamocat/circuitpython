@@ -37,7 +37,7 @@
 static circuitpy_async_flag_t *abusio_spi_rx_flags[NUM_DMA_CHANNELS];
 
 static void __not_in_flash_func(abusio_spi_dma_irq)(void) {
-    uint32_t ints = dma_hw->ints0;
+    uint32_t ints = dma_hw->ints1;
     for (uint i = 0; i < NUM_DMA_CHANNELS; i++) {
         uint32_t mask = 1u << i;
         if ((ints & mask) == 0) {
@@ -47,7 +47,7 @@ static void __not_in_flash_func(abusio_spi_dma_irq)(void) {
             continue;
         }
         // Acknowledge interrupt for this channel.
-        dma_hw->ints0 = mask;
+        dma_hw->ints1 = mask;
         CIRCUITPY_ASYNC_FLAG_SET(abusio_spi_rx_flags[i]);
         abusio_spi_rx_flags[i] = NULL;
     }
@@ -56,8 +56,8 @@ static void __not_in_flash_func(abusio_spi_dma_irq)(void) {
 static void ensure_irq_installed(void) {
     static bool installed = false;
     if (!installed) {
-        irq_add_shared_handler(DMA_IRQ_0, abusio_spi_dma_irq, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
-        irq_set_enabled(DMA_IRQ_0, true);
+        irq_set_exclusive_handler(DMA_IRQ_1, abusio_spi_dma_irq);
+        irq_set_enabled(DMA_IRQ_1, true);
         installed = true;
     }
 }
@@ -102,7 +102,7 @@ static abusio_spi_transfer_ctx_t *setup_dma_write(
 
     // Enable IRQ on RX channel completion.
     abusio_spi_rx_flags[rx] = flag;
-    dma_channel_set_irq0_enabled(rx, true);
+    dma_channel_set_irq1_enabled(rx, true);
 
     dma_start_channel_mask((1u << tx) | (1u << rx));
     return ctx;
@@ -144,7 +144,7 @@ static abusio_spi_transfer_ctx_t *setup_dma_read(
         &spi_get_hw(spi->peripheral)->dr, len, false);
 
     abusio_spi_rx_flags[rx] = flag;
-    dma_channel_set_irq0_enabled(rx, true);
+    dma_channel_set_irq1_enabled(rx, true);
 
     dma_start_channel_mask((1u << tx) | (1u << rx));
     return ctx;
@@ -182,7 +182,7 @@ static abusio_spi_transfer_ctx_t *setup_dma_write_read(
         &spi_get_hw(spi->peripheral)->dr, len, false);
 
     abusio_spi_rx_flags[rx] = flag;
-    dma_channel_set_irq0_enabled(rx, true);
+    dma_channel_set_irq1_enabled(rx, true);
 
     dma_start_channel_mask((1u << tx) | (1u << rx));
     return ctx;
@@ -191,7 +191,7 @@ static abusio_spi_transfer_ctx_t *setup_dma_write_read(
 // Unclaim both DMA channels if they haven't been freed already.
 static void cancel_dma(abusio_spi_transfer_ctx_t *ctx) {
     if (ctx->rx_channel < NUM_DMA_CHANNELS) {
-        dma_channel_set_irq0_enabled(ctx->rx_channel, false);
+        dma_channel_set_irq1_enabled(ctx->rx_channel, false);
         abusio_spi_rx_flags[ctx->rx_channel] = NULL;
         dma_channel_abort(ctx->rx_channel);
         dma_channel_unclaim(ctx->rx_channel);

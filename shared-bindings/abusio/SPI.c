@@ -20,6 +20,7 @@
 #include "shared/runtime/context_manager_helpers.h"
 #include "py/binary.h"
 #include "py/mperrno.h"
+#include "py/objarray.h"
 #include "py/objproperty.h"
 #include "py/objtuple.h"
 #include "py/runtime.h"
@@ -309,7 +310,7 @@ static mp_obj_t abusio_spi_write_readinto(size_t n_args, const mp_obj_t *pos_arg
 
     mp_obj_t out_slice = mp_obj_new_memoryview('B', out_length,
         (uint8_t *)out_bufinfo.buf + out_start);
-    mp_obj_t in_slice = mp_obj_new_memoryview('B', in_length,
+    mp_obj_t in_slice = mp_obj_new_memoryview('B' | MP_OBJ_ARRAY_TYPECODE_FLAG_RW, in_length,
         (uint8_t *)in_bufinfo.buf + in_start);
     mp_obj_t tuple_items[3] = { pos_args[0], out_slice, in_slice };
     mp_obj_t data = mp_obj_new_tuple(3, tuple_items);

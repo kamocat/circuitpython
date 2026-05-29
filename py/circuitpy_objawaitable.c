@@ -10,6 +10,10 @@
 
 #if MICROPY_PY_ASYNC_AWAIT
 
+#if MICROPY_PY_ASYNCIO
+extern mp_obj_t mp_asyncio_context;
+#endif
+
 static mp_obj_t awaitable_iternext(mp_obj_t self_in) {
     circuitpy_awaitable_obj_t *self = MP_OBJ_TO_PTR(self_in);
     if (!self->started) {
@@ -18,6 +22,22 @@ static mp_obj_t awaitable_iternext(mp_obj_t self_in) {
         self->context = self->start(&self->flag, self->data);
     }
     if (!CIRCUITPY_ASYNC_FLAG_IS_SET(&self->flag)) {
+        // asyncio's run_until_complete does NOT auto-reschedule after send() returns —
+        // the iterator must push the current task back onto _task_queue itself, just
+        // like SingletonGenerator does for asyncio.sleep().  Without this the task
+        // disappears from the queue and the await never completes.
+        #if MICROPY_PY_ASYNCIO
+        if (mp_asyncio_context != MP_OBJ_NULL) {
+            mp_obj_t _task_queue = mp_obj_dict_get(mp_asyncio_context, MP_OBJ_NEW_QSTR(MP_QSTR__task_queue));
+            mp_obj_t cur_task = mp_obj_dict_get(mp_asyncio_context, MP_OBJ_NEW_QSTR(MP_QSTR_cur_task));
+            if (_task_queue != MP_OBJ_NULL && cur_task != MP_OBJ_NULL && cur_task != mp_const_none) {
+                mp_obj_t dest[3];
+                mp_load_method(_task_queue, MP_QSTR_push, dest);
+                dest[2] = cur_task;
+                mp_call_method_n_kw(1, 0, dest);
+            }
+        }
+        #endif
         return mp_const_none; // yield — not ready yet
     }
     // Done — collect result and clean up.
