@@ -110,9 +110,6 @@ static mp_obj_t abusio_spi_deinit(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(abusio_spi_deinit_obj, abusio_spi_deinit);
 
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(abusio_spi_enter_obj, default___enter__);
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(abusio_spi_exit_obj, 4, 4, default___exit__);
-
 // ---- configuration / locking ------------------------------------------------
 
 //|     def configure(
@@ -193,11 +190,11 @@ static mp_obj_t abusio_spi_write(size_t n_args, const mp_obj_t *pos_args, mp_map
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(args[ARG_buffer].u_obj, &bufinfo, MP_BUFFER_READ);
     int32_t start = args[ARG_start].u_int;
-    int32_t end = args[ARG_end].u_int;
-    normalize_buffer_bounds(&start, &end, bufinfo.len);
+    size_t length = bufinfo.len;
+    normalize_buffer_bounds(&start, args[ARG_end].u_int, &length);
 
     // Pack (self, sliced_memoryview) as a 2-tuple passed through the awaitable data field.
-    mp_obj_t slice = mp_obj_new_memoryview('B', end - start,
+    mp_obj_t slice = mp_obj_new_memoryview('B', length,
         (uint8_t *)bufinfo.buf + start);
     mp_obj_t tuple_items[2] = { pos_args[0], slice };
     mp_obj_t data = mp_obj_new_tuple(2, tuple_items);
@@ -241,10 +238,10 @@ static mp_obj_t abusio_spi_readinto(size_t n_args, const mp_obj_t *pos_args, mp_
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(args[ARG_buffer].u_obj, &bufinfo, MP_BUFFER_WRITE);
     int32_t start = args[ARG_start].u_int;
-    int32_t end = args[ARG_end].u_int;
-    normalize_buffer_bounds(&start, &end, bufinfo.len);
+    size_t length = bufinfo.len;
+    normalize_buffer_bounds(&start, args[ARG_end].u_int, &length);
 
-    mp_obj_t slice = mp_obj_new_memoryview('B', end - start,
+    mp_obj_t slice = mp_obj_new_memoryview('B', length,
         (uint8_t *)bufinfo.buf + start);
     mp_obj_t tuple_items[3] = {
         pos_args[0],
@@ -300,19 +297,19 @@ static mp_obj_t abusio_spi_write_readinto(size_t n_args, const mp_obj_t *pos_arg
     mp_get_buffer_raise(args[ARG_in_buffer].u_obj, &in_bufinfo, MP_BUFFER_WRITE);
 
     int32_t out_start = args[ARG_out_start].u_int;
-    int32_t out_end = args[ARG_out_end].u_int;
-    normalize_buffer_bounds(&out_start, &out_end, out_bufinfo.len);
+    size_t out_length = out_bufinfo.len;
+    normalize_buffer_bounds(&out_start, args[ARG_out_end].u_int, &out_length);
     int32_t in_start = args[ARG_in_start].u_int;
-    int32_t in_end = args[ARG_in_end].u_int;
-    normalize_buffer_bounds(&in_start, &in_end, in_bufinfo.len);
+    size_t in_length = in_bufinfo.len;
+    normalize_buffer_bounds(&in_start, args[ARG_in_end].u_int, &in_length);
 
-    if (out_end - out_start != in_end - in_start) {
+    if (out_length != in_length) {
         mp_raise_ValueError(MP_ERROR_TEXT("buffer slices must be same length"));
     }
 
-    mp_obj_t out_slice = mp_obj_new_memoryview('B', out_end - out_start,
+    mp_obj_t out_slice = mp_obj_new_memoryview('B', out_length,
         (uint8_t *)out_bufinfo.buf + out_start);
-    mp_obj_t in_slice = mp_obj_new_memoryview('B', in_end - in_start,
+    mp_obj_t in_slice = mp_obj_new_memoryview('B', in_length,
         (uint8_t *)in_bufinfo.buf + in_start);
     mp_obj_t tuple_items[3] = { pos_args[0], out_slice, in_slice };
     mp_obj_t data = mp_obj_new_tuple(3, tuple_items);
@@ -343,8 +340,8 @@ MP_PROPERTY_GETTER(abusio_spi_frequency_obj, (mp_obj_t)&abusio_spi_frequency_get
 static const mp_rom_map_elem_t abusio_spi_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_deinit),        MP_ROM_PTR(&abusio_spi_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR___del__),       MP_ROM_PTR(&abusio_spi_deinit_obj) },
-    { MP_ROM_QSTR(MP_QSTR___enter__),     MP_ROM_PTR(&abusio_spi_enter_obj) },
-    { MP_ROM_QSTR(MP_QSTR___exit__),      MP_ROM_PTR(&abusio_spi_exit_obj) },
+    { MP_ROM_QSTR(MP_QSTR___enter__),     MP_ROM_PTR(&default___enter___obj) },
+    { MP_ROM_QSTR(MP_QSTR___exit__),      MP_ROM_PTR(&default___exit___obj) },
 
     { MP_ROM_QSTR(MP_QSTR_configure),     MP_ROM_PTR(&abusio_spi_configure_obj) },
     { MP_ROM_QSTR(MP_QSTR_try_lock),      MP_ROM_PTR(&abusio_spi_try_lock_obj) },

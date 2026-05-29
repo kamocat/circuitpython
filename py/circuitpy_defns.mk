@@ -491,6 +491,8 @@ SRC_COMMON_HAL_ALL = \
 	alarm/pin/PinAlarm.c \
 	alarm/time/TimeAlarm.c \
 	alarm/touch/TouchAlarm.c \
+	abusio/SPI.c \
+	abusio/__init__.c \
 	analogbufio/BufferedIn.c \
 	analogbufio/__init__.c \
 	analogio/AnalogIn.c \

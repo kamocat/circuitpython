@@ -43,4 +43,6 @@ const mp_obj_module_t abusio_module = {
     .globals = (mp_obj_dict_t *)&abusio_module_globals,
 };
 
+#if CIRCUITPY_ABUSIO
 MP_REGISTER_MODULE(MP_QSTR_abusio, abusio_module);
+#endif

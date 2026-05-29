@@ -177,6 +177,7 @@ PY_CORE_O_BASENAME = $(addprefix py/,\
 	objfloat.o \
 	objfun.o \
 	objgenerator.o \
+	circuitpy_objawaitable.o \
 	objgetitemiter.o \
 	objint.o \
 	objint_longlong.o \

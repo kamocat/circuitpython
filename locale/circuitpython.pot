@@ -3696,10 +3696,6 @@ msgstr ""
 msgid "more degrees of freedom than data points"
 msgstr ""
 
-#: shared-bindings/asyncexample/__init__.c
-msgid "ms must be >= 0"
-msgstr ""
-
 #: py/compile.c
 msgid "multiple *x in assignment"
 msgstr ""
