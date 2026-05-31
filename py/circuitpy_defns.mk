@@ -119,6 +119,9 @@ endif
 ifeq ($(CIRCUITPY_ABUSIO),1)
 SRC_PATTERNS += abusio/%
 endif
+ifeq ($(CIRCUITPY_ASDCARDIO),1)
+SRC_PATTERNS += asdcardio/%
+endif
 ifeq ($(CIRCUITPY_ATEXIT),1)
 SRC_PATTERNS += atexit/%
 endif
@@ -786,6 +789,8 @@ SRC_SHARED_MODULE_ALL = \
 	rotaryio/IncrementalEncoder.c \
 	sdcardio/SDCard.c \
 	sdcardio/__init__.c \
+	asdcardio/ASdCard.c \
+	asdcardio/__init__.c \
 	sharpdisplay/SharpMemoryFramebuffer.c \
 	sharpdisplay/__init__.c \
 	socket/__init__.c \

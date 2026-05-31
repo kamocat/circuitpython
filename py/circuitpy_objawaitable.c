@@ -46,6 +46,25 @@ static mp_obj_t awaitable_iternext(mp_obj_t self_in) {
         self->finished = true;
         result = self->end(self->context);
     }
+    // MP_OBJ_NULL is a multi-phase continue sentinel: end() has re-armed the
+    // flag and started the next DMA block.  Reset finished, re-queue the task,
+    // and yield so the event loop can run other tasks while we wait.
+    if (result == MP_OBJ_NULL) {
+        self->finished = false;
+        #if MICROPY_PY_ASYNCIO
+        if (mp_asyncio_context != MP_OBJ_NULL) {
+            mp_obj_t _task_queue = mp_obj_dict_get(mp_asyncio_context, MP_OBJ_NEW_QSTR(MP_QSTR__task_queue));
+            mp_obj_t cur_task = mp_obj_dict_get(mp_asyncio_context, MP_OBJ_NEW_QSTR(MP_QSTR_cur_task));
+            if (_task_queue != MP_OBJ_NULL && cur_task != MP_OBJ_NULL && cur_task != mp_const_none) {
+                mp_obj_t dest[3];
+                mp_load_method(_task_queue, MP_QSTR_push, dest);
+                dest[2] = cur_task;
+                mp_call_method_n_kw(1, 0, dest);
+            }
+        }
+        #endif
+        return mp_const_none; // yield — next block DMA in progress
+    }
     self->finished = true;
     MP_STATE_THREAD(stop_iteration_arg) = result;
     return MP_OBJ_STOP_ITERATION;
