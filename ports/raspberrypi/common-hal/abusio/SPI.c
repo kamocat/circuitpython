@@ -38,6 +38,10 @@ static circuitpy_async_flag_t *abusio_spi_rx_flags[NUM_DMA_CHANNELS];
 
 static void __not_in_flash_func(abusio_spi_dma_irq)(void) {
     uint32_t ints = dma_hw->ints1;
+    // Clear ALL pending bits upfront.  If we only clear bits for channels we
+    // own and skip unowned ones, the interrupt re-fires immediately and the
+    // CPU is stuck in an infinite ISR loop.
+    dma_hw->ints1 = ints;
     for (uint i = 0; i < NUM_DMA_CHANNELS; i++) {
         uint32_t mask = 1u << i;
         if ((ints & mask) == 0) {
@@ -46,8 +50,6 @@ static void __not_in_flash_func(abusio_spi_dma_irq)(void) {
         if (abusio_spi_rx_flags[i] == NULL) {
             continue;
         }
-        // Acknowledge interrupt for this channel.
-        dma_hw->ints1 = mask;
         CIRCUITPY_ASYNC_FLAG_SET(abusio_spi_rx_flags[i]);
         abusio_spi_rx_flags[i] = NULL;
     }
