@@ -42,7 +42,8 @@
 // ---- SD protocol constants --------------------------------------------------
 
 #define CMD_TIMEOUT         (200)
-#define READY_TIMEOUT_NS    (300 * 1000 * 1000) // 300 ms
+#define READY_TIMEOUT_NS    (300 * 1000 * 1000)  // 300 ms
+#define WRITE_TIMEOUT_NS    (1000 * 1000 * 1000) // 1 s — max card busy time
 
 #define R1_IDLE_STATE       (1 << 0)
 #define R1_ILLEGAL_COMMAND  (1 << 2)
@@ -406,10 +407,14 @@ static int sync_write(asdcardio_asdcard_obj_t *self, uint8_t token, const void *
     if ((resp & 0x1f) != 0x05) {
         return -MP_EIO;
     }
-    // Wait for write to finish
+    // Wait for write to finish (1 s timeout)
+    uint64_t deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
     uint8_t b = 0;
     do {
         common_hal_busio_spi_read(as_busio(self), &b, 1, 0xff);
+        if (common_hal_time_monotonic_ns() > deadline) {
+            return -MP_ETIMEDOUT;
+        }
     } while (b == 0);
     return 0;
 }
@@ -659,15 +664,22 @@ void *common_hal_asdcardio_asdcard_writeblocks_start(circuitpy_async_flag_t *fla
     ctx->is_write = true;
     ctx->abusio_ctx = NULL;
 
-    // Send CMD24 for this block (single-block write; one per block for simplicity)
-    int r = block_cmd(card, 24, ctx->block, NULL, 0, false, true);
+    // Use CMD25 (multi-block write) for nblocks > 1 — the SD card can pipeline
+    // sector programming across an erase unit, reducing busy-wait latency vs
+    // N × CMD24.  Single-block writes still use CMD24 for simplicity.
+    int r;
+    uint8_t token;
+    if (nblocks > 1) {
+        r = block_cmd(card, 25, ctx->block, NULL, 0, false, true);
+        token = TOKEN_CMD25;   // 0xFC — CMD25 data-block start token
+    } else {
+        r = block_cmd(card, 24, ctx->block, NULL, 0, false, true);
+        token = TOKEN_DATA;    // 0xFE — CMD24 data token
+    }
     if (r < 0) {
         extraclock_and_unlock_bus(card);
         mp_raise_OSError(-r);
     }
-
-    // Send TOKEN_DATA (synchronous — 1 byte)
-    uint8_t token = TOKEN_DATA;
     common_hal_busio_spi_write(as_busio(card), &token, 1);
 
     // Kick off DMA write for 512 bytes
@@ -702,30 +714,57 @@ mp_obj_t common_hal_asdcardio_asdcard_writeblocks_end(void *raw_ctx) {
         mp_raise_OSError(MP_EIO);
     }
 
-    // Wait for card busy (0x00) to clear
+    // Wait for card busy (0x00) to clear (1 s timeout)
+    uint64_t deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
     uint8_t b = 0;
     do {
         common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff);
+        if (common_hal_time_monotonic_ns() > deadline) {
+            extraclock_and_unlock_bus(card);
+            mp_raise_OSError(MP_ETIMEDOUT);
+        }
     } while (b == 0);
 
     ctx->buf += 512;
+    ctx->block++;
     ctx->nblocks--;
 
     if (ctx->nblocks > 0) {
-        // Issue CMD24 for the next block, then DMA
-        ctx->block++;
-        int r = block_cmd(card, 24, ctx->block, NULL, 0, false, true);
-        if (r < 0) {
-            extraclock_and_unlock_bus(card);
-            mp_raise_OSError(-r);
+        if (ctx->total_blocks > 1) {
+            // CMD25 mode: no new command — just send TOKEN_CMD25 for next block.
+            uint8_t tok = TOKEN_CMD25;
+            common_hal_busio_spi_write(as_busio(card), &tok, 1);
+        } else {
+            // CMD24 mode: issue a fresh CMD24 for the next block.
+            int r = block_cmd(card, 24, ctx->block, NULL, 0, false, true);
+            if (r < 0) {
+                extraclock_and_unlock_bus(card);
+                mp_raise_OSError(-r);
+            }
+            uint8_t tok = TOKEN_DATA;
+            common_hal_busio_spi_write(as_busio(card), &tok, 1);
         }
-        uint8_t tok = TOKEN_DATA;
-        common_hal_busio_spi_write(as_busio(card), &tok, 1);
 
         ctx->abusio_data = make_write_data(card, ctx->buf);
         CIRCUITPY_ASYNC_FLAG_INIT(ctx->flag);
         ctx->abusio_ctx = common_hal_abusio_spi_write_start(ctx->flag, ctx->abusio_data);
         return MP_OBJ_NULL; // keep polling
+    }
+
+    if (ctx->total_blocks > 1) {
+        // CMD25 termination sequence: STOP_TRAN token + 8 dummy clocks + busy wait.
+        uint8_t stop = TOKEN_STOP_TRAN;
+        common_hal_busio_spi_write(as_busio(card), &stop, 1);
+        uint8_t dummy;
+        common_hal_busio_spi_read(as_busio(card), &dummy, 1, 0xff);
+        uint64_t stop_deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
+        do {
+            common_hal_busio_spi_read(as_busio(card), &dummy, 1, 0xff);
+            if (common_hal_time_monotonic_ns() > stop_deadline) {
+                extraclock_and_unlock_bus(card);
+                mp_raise_OSError(MP_ETIMEDOUT);
+            }
+        } while (dummy == 0x00);
     }
 
     extraclock_and_unlock_bus(card);
