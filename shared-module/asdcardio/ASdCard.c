@@ -39,6 +39,15 @@
 #define DEBUG_PRINT(...) ((void)0)
 #endif
 
+// Enable to print per-transfer blocking/total time on completion.
+// blocking_ns = time CPU was busy in writeblocks_start() + each end() invocation.
+// Total time includes DMA transfers and BUSY_WAIT yields (bus released).
+#if 0
+#define TIMING_PRINT(...) ((void)mp_printf(&mp_plat_print,##__VA_ARGS__))
+#else
+#define TIMING_PRINT(...) ((void)0)
+#endif
+
 // ---- SD protocol constants --------------------------------------------------
 
 #define CMD_TIMEOUT         (200)
@@ -653,6 +662,7 @@ void *common_hal_asdcardio_asdcard_writeblocks_start(circuitpy_async_flag_t *fla
     if (!lock_and_configure_bus(card)) {
         mp_raise_OSError(EAGAIN);
     }
+    uint64_t t_wb_start = common_hal_time_monotonic_ns();
 
     asdcardio_transfer_ctx_t *ctx = m_new_obj(asdcardio_transfer_ctx_t);
     ctx->card = card;
@@ -683,17 +693,142 @@ void *common_hal_asdcardio_asdcard_writeblocks_start(circuitpy_async_flag_t *fla
     common_hal_busio_spi_write(as_busio(card), &token, 1);
 
     // Kick off DMA write for 512 bytes
+    ctx->phase = ASDCARD_PHASE_DMA;
     ctx->abusio_data = make_write_data(card, ctx->buf);
     ctx->abusio_ctx = common_hal_abusio_spi_write_start(flag, ctx->abusio_data);
 
+    ctx->t_start = t_wb_start;
+    ctx->blocking_ns = common_hal_time_monotonic_ns() - t_wb_start;
+    ctx->busy_polls = 0;
+
     return ctx;
+}
+
+// Called with bus locked and CS asserted.  Advances ctx to the next block or
+// terminates the multi-block transfer.  Returns MP_OBJ_NULL when more work
+// remains (DMA or STOP_WAIT), mp_const_none when the transfer is complete.
+static mp_obj_t writeblocks_advance(asdcardio_transfer_ctx_t *ctx) {
+    asdcardio_asdcard_obj_t *card = ctx->card;
+    ctx->buf += 512;
+    ctx->block++;
+    ctx->nblocks--;
+
+    if (ctx->nblocks > 0) {
+        if (ctx->total_blocks > 1) {
+            // CMD25 mode: no new command — just send TOKEN_CMD25 for next block.
+            uint8_t tok = TOKEN_CMD25;
+            common_hal_busio_spi_write(as_busio(card), &tok, 1);
+        } else {
+            // CMD24 mode: issue a fresh CMD24 for the next block.
+            int r = block_cmd(card, 24, ctx->block, NULL, 0, false, true);
+            if (r < 0) {
+                extraclock_and_unlock_bus(card);
+                mp_raise_OSError(-r);
+            }
+            uint8_t tok = TOKEN_DATA;
+            common_hal_busio_spi_write(as_busio(card), &tok, 1);
+        }
+        ctx->abusio_data = make_write_data(card, ctx->buf);
+        CIRCUITPY_ASYNC_FLAG_INIT(ctx->flag);
+        ctx->abusio_ctx = common_hal_abusio_spi_write_start(ctx->flag, ctx->abusio_data);
+        ctx->phase = ASDCARD_PHASE_DMA;
+        return MP_OBJ_NULL;
+    }
+
+    // Last block — CMD25 termination: STOP_TRAN + stuff byte + first busy sample.
+    if (ctx->total_blocks > 1) {
+        uint8_t stop = TOKEN_STOP_TRAN;
+        common_hal_busio_spi_write(as_busio(card), &stop, 1);
+        uint8_t b;
+        common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff); // stuff byte (Nec)
+        common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff); // first busy sample
+        if (b == 0x00) {
+            ctx->busy_deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
+            ctx->phase = ASDCARD_PHASE_STOP_WAIT;
+            cs_deassert(card);
+            common_hal_busio_spi_unlock(as_busio(card));
+            return MP_OBJ_NULL;
+        }
+    }
+
+    extraclock_and_unlock_bus(card);
+    return mp_const_none;
 }
 
 mp_obj_t common_hal_asdcardio_asdcard_writeblocks_end(void *raw_ctx) {
     asdcardio_transfer_ctx_t *ctx = raw_ctx;
     asdcardio_asdcard_obj_t *card = ctx->card;
+    uint64_t t0 = common_hal_time_monotonic_ns();
+    mp_obj_t result;
 
-    // Collect DMA result
+    // ── STOP_WAIT: CMD25 STOP_TRAN sent; polling until card releases DO ──────
+    //
+    // The SD SPI spec says CS should remain asserted during busy, but
+    // SDHC/SDXC cards re-assert busy correctly after a CS deassert/reassert
+    // cycle, which lets us release the bus between polls.
+    if (ctx->phase == ASDCARD_PHASE_STOP_WAIT) {
+        if (!lock_and_configure_bus(card)) {
+            ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+            return MP_OBJ_NULL; // bus held by another task — yield and retry
+        }
+        uint8_t b;
+        common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff);
+        ctx->busy_polls++;
+        if (b == 0x00) {
+            if (common_hal_time_monotonic_ns() > ctx->busy_deadline) {
+                extraclock_and_unlock_bus(card);
+                mp_raise_OSError(MP_ETIMEDOUT);
+            }
+            cs_deassert(card);
+            common_hal_busio_spi_unlock(as_busio(card));
+            ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+            return MP_OBJ_NULL;
+        }
+        extraclock_and_unlock_bus(card);
+        uint64_t t_now = common_hal_time_monotonic_ns();
+        ctx->blocking_ns += t_now - t0;
+        TIMING_PRINT("writeblocks: %lu blk blocking=%luus total=%luus busy_polls=%lu\n",
+            (unsigned long)ctx->total_blocks,
+            (unsigned long)(ctx->blocking_ns / 1000),
+            (unsigned long)((t_now - ctx->t_start) / 1000),
+            (unsigned long)ctx->busy_polls);
+        return mp_const_none;
+    }
+
+    // ── BUSY_WAIT: per-block programming; polling until card releases DO ──────
+    if (ctx->phase == ASDCARD_PHASE_BUSY_WAIT) {
+        if (!lock_and_configure_bus(card)) {
+            ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+            return MP_OBJ_NULL; // bus held by another task — yield and retry
+        }
+        uint8_t b;
+        common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff);
+        ctx->busy_polls++;
+        if (b == 0x00) {
+            if (common_hal_time_monotonic_ns() > ctx->busy_deadline) {
+                extraclock_and_unlock_bus(card);
+                mp_raise_OSError(MP_ETIMEDOUT);
+            }
+            cs_deassert(card);
+            common_hal_busio_spi_unlock(as_busio(card));
+            ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+            return MP_OBJ_NULL;
+        }
+        // Card ready — bus is locked, CS asserted — advance to next block.
+        result = writeblocks_advance(ctx);
+        uint64_t t_now = common_hal_time_monotonic_ns();
+        ctx->blocking_ns += t_now - t0;
+        if (result == mp_const_none) {
+            TIMING_PRINT("writeblocks: %lu blk blocking=%luus total=%luus busy_polls=%lu\n",
+                (unsigned long)ctx->total_blocks,
+                (unsigned long)(ctx->blocking_ns / 1000),
+                (unsigned long)((t_now - ctx->t_start) / 1000),
+                (unsigned long)ctx->busy_polls);
+        }
+        return result;
+    }
+
+    // ── DMA phase: collect result, send CRC, read response token ─────────────
     common_hal_abusio_spi_write_end(ctx->abusio_ctx);
     ctx->abusio_ctx = NULL;
 
@@ -714,65 +849,38 @@ mp_obj_t common_hal_asdcardio_asdcard_writeblocks_end(void *raw_ctx) {
         mp_raise_OSError(MP_EIO);
     }
 
-    // Wait for card busy (0x00) to clear (1 s timeout)
-    uint64_t deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
-    uint8_t b = 0;
-    do {
-        common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff);
-        if (common_hal_time_monotonic_ns() > deadline) {
-            extraclock_and_unlock_bus(card);
-            mp_raise_OSError(MP_ETIMEDOUT);
-        }
-    } while (b == 0);
-
-    ctx->buf += 512;
-    ctx->block++;
-    ctx->nblocks--;
-
-    if (ctx->nblocks > 0) {
-        if (ctx->total_blocks > 1) {
-            // CMD25 mode: no new command — just send TOKEN_CMD25 for next block.
-            uint8_t tok = TOKEN_CMD25;
-            common_hal_busio_spi_write(as_busio(card), &tok, 1);
-        } else {
-            // CMD24 mode: issue a fresh CMD24 for the next block.
-            int r = block_cmd(card, 24, ctx->block, NULL, 0, false, true);
-            if (r < 0) {
-                extraclock_and_unlock_bus(card);
-                mp_raise_OSError(-r);
-            }
-            uint8_t tok = TOKEN_DATA;
-            common_hal_busio_spi_write(as_busio(card), &tok, 1);
-        }
-
-        ctx->abusio_data = make_write_data(card, ctx->buf);
-        CIRCUITPY_ASYNC_FLAG_INIT(ctx->flag);
-        ctx->abusio_ctx = common_hal_abusio_spi_write_start(ctx->flag, ctx->abusio_data);
-        return MP_OBJ_NULL; // keep polling
+    // Sample first busy byte; deassert CS and yield if card is still programming.
+    uint8_t b;
+    common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff);
+    if (b == 0x00) {
+        ctx->busy_deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
+        ctx->phase = ASDCARD_PHASE_BUSY_WAIT;
+        cs_deassert(card);
+        common_hal_busio_spi_unlock(as_busio(card));
+        ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+        return MP_OBJ_NULL;
     }
 
-    if (ctx->total_blocks > 1) {
-        // CMD25 termination sequence: STOP_TRAN token + 8 dummy clocks + busy wait.
-        uint8_t stop = TOKEN_STOP_TRAN;
-        common_hal_busio_spi_write(as_busio(card), &stop, 1);
-        uint8_t dummy;
-        common_hal_busio_spi_read(as_busio(card), &dummy, 1, 0xff);
-        uint64_t stop_deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
-        do {
-            common_hal_busio_spi_read(as_busio(card), &dummy, 1, 0xff);
-            if (common_hal_time_monotonic_ns() > stop_deadline) {
-                extraclock_and_unlock_bus(card);
-                mp_raise_OSError(MP_ETIMEDOUT);
-            }
-        } while (dummy == 0x00);
+    // Card was already ready — advance immediately.
+    result = writeblocks_advance(ctx);
+    uint64_t t_now = common_hal_time_monotonic_ns();
+    ctx->blocking_ns += t_now - t0;
+    if (result == mp_const_none) {
+        TIMING_PRINT("writeblocks: %lu blk blocking=%luus total=%luus busy_polls=%lu\n",
+            (unsigned long)ctx->total_blocks,
+            (unsigned long)(ctx->blocking_ns / 1000),
+            (unsigned long)((t_now - ctx->t_start) / 1000),
+            (unsigned long)ctx->busy_polls);
     }
-
-    extraclock_and_unlock_bus(card);
-    return mp_const_none;
+    return result;
 }
 
 void common_hal_asdcardio_asdcard_writeblocks_cancel(void *raw_ctx) {
     asdcardio_transfer_ctx_t *ctx = raw_ctx;
+    if (ctx->phase == ASDCARD_PHASE_BUSY_WAIT || ctx->phase == ASDCARD_PHASE_STOP_WAIT) {
+        // Bus is already unlocked and CS deasserted — nothing to tear down.
+        return;
+    }
     if (ctx->abusio_ctx) {
         common_hal_abusio_spi_write_cancel(ctx->abusio_ctx);
         ctx->abusio_ctx = NULL;

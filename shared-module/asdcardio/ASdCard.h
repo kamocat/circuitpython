@@ -22,6 +22,8 @@ typedef enum {
     ASDCARD_PHASE_TOKEN_WAIT,   // poll for 0xFE start-block token (read path)
     ASDCARD_PHASE_DMA,          // DMA in flight — awaitable is yielding
     ASDCARD_PHASE_CRC,          // DMA done — consume 2-byte CRC
+    ASDCARD_PHASE_BUSY_WAIT,    // per-block programming — CS deasserted, bus unlocked
+    ASDCARD_PHASE_STOP_WAIT,    // CMD25 STOP_TRAN sent — CS deasserted, bus unlocked
     ASDCARD_PHASE_DONE,         // all blocks transferred; send stop + deassert CS
 } asdcard_phase_t;
 
@@ -49,6 +51,11 @@ typedef struct {
     uint32_t total_blocks;              // total blocks requested (for CMD18/CMD25)
     bool is_write;                      // true → write path, false → read path
     asdcard_phase_t phase;
+    uint64_t busy_deadline;             // monotonic ns deadline for BUSY_WAIT / STOP_WAIT
+    // Timing instrumentation (gated by TIMING_PRINT in ASdCard.c).
+    uint64_t t_start;                   // monotonic ns at end of writeblocks_start()
+    uint64_t blocking_ns;               // cumulative time spent in blocking sections
+    uint32_t busy_polls;                // number of BUSY_WAIT / STOP_WAIT poll iterations
     // Sub-context passed to abusio for the current 512-byte DMA transfer.
     // We store the data tuple here so that GC can trace it.
     mp_obj_t abusio_data;               // tuple built for common_hal_abusio_spi_* calls
