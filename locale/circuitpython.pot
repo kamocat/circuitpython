@@ -694,7 +694,8 @@ msgstr ""
 #: ports/atmel-samd/common-hal/sdioio/SDCard.c
 #: ports/cxd56/common-hal/sdioio/SDCard.c
 #: ports/espressif/common-hal/sdioio/SDCard.c
-#: ports/stm/common-hal/sdioio/SDCard.c shared-bindings/floppyio/__init__.c
+#: ports/stm/common-hal/sdioio/SDCard.c shared-bindings/asdcardio/ASdCard.c
+#: shared-bindings/asdioio/ASDioCard.c shared-bindings/floppyio/__init__.c
 #: shared-module/sdcardio/SDCard.c
 #, c-format
 msgid "Buffer must be a multiple of %d bytes"
@@ -730,6 +731,16 @@ msgstr ""
 
 #: supervisor/shared/safe_mode.c
 msgid "CIRCUITPY drive could not be found or created."
+msgstr ""
+
+#: ports/raspberrypi/common-hal/asdioio/ASDioCard.c
+#, c-format
+msgid "CLK pin (GPIO%d) is already in use"
+msgstr ""
+
+#: ports/raspberrypi/common-hal/sdioio/SDCard.c
+#, c-format
+msgid "CLK pin must be %d (D0-2 mod 32)"
 msgstr ""
 
 #: ports/espressif/common-hal/espidf/__init__.c
@@ -913,6 +924,15 @@ msgstr ""
 #: ports/espressif/common-hal/_bleio/Adapter.c
 #: ports/nordic/common-hal/_bleio/Adapter.c
 msgid "Data not supported with directed advertising"
+msgstr ""
+
+#: ports/raspberrypi/common-hal/asdioio/ASDioCard.c
+#, c-format
+msgid "Data pin D%d (GPIO%d) is already in use"
+msgstr ""
+
+#: ports/raspberrypi/common-hal/sdioio/SDCard.c
+msgid "Data pins must be consecutive D0, D0+1, D0+2, D0+3"
 msgstr ""
 
 #: ports/espressif/common-hal/_bleio/Adapter.c
@@ -1989,7 +2009,7 @@ msgstr ""
 msgid "Running in safe mode! Not running saved code.\n"
 msgstr ""
 
-#: shared-module/sdcardio/SDCard.c
+#: shared-module/asdcardio/ASdCard.c shared-module/sdcardio/SDCard.c
 msgid "SD card CSD format not supported"
 msgstr ""
 
@@ -2006,6 +2026,10 @@ msgstr ""
 #: ports/stm/common-hal/sdioio/SDCard.c
 #, c-format
 msgid "SDIO Init Error %x"
+msgstr ""
+
+#: ports/raspberrypi/common-hal/asdioio/ASDioCard.c
+msgid "SDIO init failed: PIO/DMA unavailable"
 msgstr ""
 
 #: ports/espressif/common-hal/busio/SPI.c
@@ -2882,7 +2906,7 @@ msgstr ""
 msgid "can't send non-None value to a just-started generator"
 msgstr ""
 
-#: shared-module/sdcardio/SDCard.c
+#: shared-module/asdcardio/ASdCard.c shared-module/sdcardio/SDCard.c
 msgid "can't set 512 block size"
 msgstr ""
 
@@ -3036,7 +3060,7 @@ msgstr ""
 msgid "could not invert Vandermonde matrix"
 msgstr ""
 
-#: shared-module/sdcardio/SDCard.c
+#: shared-module/asdcardio/ASdCard.c shared-module/sdcardio/SDCard.c
 msgid "couldn't determine SD card version"
 msgstr ""
 
@@ -3765,7 +3789,7 @@ msgstr ""
 msgid "nested index must be int"
 msgstr ""
 
-#: shared-module/sdcardio/SDCard.c
+#: shared-module/asdcardio/ASdCard.c shared-module/sdcardio/SDCard.c
 msgid "no SD card"
 msgstr ""
 
@@ -3789,7 +3813,7 @@ msgstr ""
 msgid "no module named '%q'"
 msgstr ""
 
-#: shared-module/sdcardio/SDCard.c
+#: shared-module/asdcardio/ASdCard.c shared-module/sdcardio/SDCard.c
 msgid "no response from SD card"
 msgstr ""
 
@@ -4306,11 +4330,11 @@ msgstr ""
 msgid "timeout waiting for index pulse"
 msgstr ""
 
-#: shared-module/sdcardio/SDCard.c
+#: shared-module/asdcardio/ASdCard.c shared-module/sdcardio/SDCard.c
 msgid "timeout waiting for v1 card"
 msgstr ""
 
-#: shared-module/sdcardio/SDCard.c
+#: shared-module/asdcardio/ASdCard.c shared-module/sdcardio/SDCard.c
 msgid "timeout waiting for v2 card"
 msgstr ""
 

@@ -381,6 +381,9 @@ endif
 ifeq ($(CIRCUITPY_SDIOIO),1)
 SRC_PATTERNS += sdioio/%
 endif
+ifeq ($(CIRCUITPY_ASDIOIO),1)
+SRC_PATTERNS += asdioio/%
+endif
 ifeq ($(CIRCUITPY_SHARPDISPLAY),1)
 SRC_PATTERNS += sharpdisplay/%
 endif
@@ -571,6 +574,8 @@ SRC_COMMON_HAL_ALL = \
 	rtc/__init__.c \
 	sdioio/SDCard.c \
 	sdioio/__init__.c \
+	asdioio/ASDioCard.c \
+	asdioio/__init__.c \
 	socketpool/__init__.c \
 	socketpool/SocketPool.c \
 	socketpool/Socket.c \

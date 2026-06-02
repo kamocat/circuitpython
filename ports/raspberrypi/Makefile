@@ -581,6 +581,11 @@ endif
 
 endif
 
+# The SDIO PIO/DMA transport layer is shared by sdioio and asdioio.
+ifeq ($(CIRCUITPY_SDIOIO),1)
+SRC_C += common-hal/sdioio/rp2350_sdio.c
+endif
+
 ifeq ($(CIRCUITPY_SSL),1)
 CFLAGS += -isystem $(TOP)/mbedtls/include
 SRC_MBEDTLS := $(addprefix lib/mbedtls/library/, \

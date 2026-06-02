@@ -1,0 +1,132 @@
+; RP2350 PIO program for SD card access in SDIO (4-bit) mode.
+;
+; Ported from carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico (Apache-2.0).
+; Original: https://github.com/carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
+;           src/sd_driver/SDIO/rp2040_sdio.pio
+;
+; Run "pioasm rp2350_sdio.pio rp2350_sdio.pio.h" to regenerate the C header.
+;
+; GPIO pin mapping (all offsets relative to D0):
+;   CLK = (D0 - 2) mod 32  (SDIO_CLK_PIN_D0_OFFSET = 30)
+;   CMD = user-specified
+;   D0  = user-specified
+;   D1  = D0 + 1
+;   D2  = D0 + 2
+;   D3  = D0 + 3
+;
+; Clock: data written on falling edge, sampled on rising edge.
+; CLKDIV = D0 + 1 + D1 + 1 = 4 (each bit takes 4 PIO cycles).
+
+.define D0 1
+.define D1 1
+.define PUBLIC CLKDIV D0 + 1 + D1 + 1
+
+; CLK is at offset -2 (mod 32) from D0.
+.define PUBLIC SDIO_CLK_PIN_D0_OFFSET 30
+
+; ─────────────────────────────────────────────────────────────────────────────
+; State Machine 0 — sdio_cmd_clk
+;
+; Generates a continuous clock on CLK (sideset), sends CMD packets and
+; receives responses over the CMD pin.
+;
+; TX FIFO protocol (two 32-bit words per command):
+;   Word 0 bits 31-24: total command bits minus 1 (usually 47)
+;   Word 0 bits 23-00: first 24 bits of command, MSB first
+;   Word 1 bits 31-08: last 24 bits of command, MSB first
+;   Word 1 bits  7- 0: number of response bits minus 1 (usually 47), or 0
+;
+; RX FIFO: response bits, MSB first.  Partial last word is zero-padded at top.
+;
+; EXECCTRL STATUS should indicate TX FIFO < 2 (MOV_STATUS = STATUS_TX_LESSTHAN, 2).
+; AUTOPULL and AUTOPUSH must be enabled with threshold 32.
+; ─────────────────────────────────────────────────────────────────────────────
+.program sdio_cmd_clk
+    .side_set 1
+
+    mov OSR, NULL       side 1 [D1]    ; Pre-fill OSR with zeros (suppress autopull)
+
+wait_cmd:
+    mov Y, !STATUS      side 0 [D0]    ; Y = !STATUS; non-zero if TX FIFO has >= 2 words
+    jmp !Y wait_cmd     side 1 [D1]    ; loop until data available
+
+load_cmd:
+    out NULL, 32        side 0 [D0]    ; Discard first word (triggers autopull of word 0)
+    out X, 8            side 1 [D1]    ; X = bit count for command minus 1
+    set pins, 1         side 0 [D0]    ; CMD line high (idle state)
+    set pindirs, 1      side 1 [D1]    ; CMD as output
+
+send_cmd:
+    out pins, 1         side 0 [D0]    ; Shift out one bit on falling CLK edge
+    jmp X-- send_cmd    side 1 [D1]    ; Loop for all command bits
+
+prep_resp:
+    set pindirs, 0      side 0 [D0]    ; CMD as input
+    out X, 8            side 1 [D1]    ; X = response bit count minus 1
+    nop                 side 0 [D0]    ; Clock alignment
+    jmp !X resp_done    side 1 [D1]    ; Skip if no response expected
+
+wait_resp:
+    nop                 side 0 [D0]
+    jmp PIN wait_resp   side 1 [D1]    ; Wait for start bit (CMD = 0)
+
+    ; Read input on CLK=0 — before card sees falling edge, maximising setup time.
+read_resp:
+    in PINS, 1          side 0 [D0]    ; Sample input bit
+    jmp X-- read_resp   side 1 [D1]    ; Loop for all response bits
+
+resp_done:
+    push                side 0 [D0]    ; Push any remaining response bits
+
+
+; ─────────────────────────────────────────────────────────────────────────────
+; State Machine 1 — sdio_data_rx
+;
+; Waits for the 0 start bit on D0 then receives an SDIO 4-bit data block.
+; Register Y must be pre-loaded with (nibble_count - 1) before enabling SM.
+; Nibble count = block_size_bytes * 2 + 16  (data + 8-byte CRC field in nibbles).
+; ─────────────────────────────────────────────────────────────────────────────
+.program sdio_data_rx
+
+wait_start:
+    mov X, Y                               ; Reinitialise nibble counter
+    wait 0 pin 0                           ; Wait for D0 low (start bit)
+    wait 1 pin SDIO_CLK_PIN_D0_OFFSET  [CLKDIV-1]  ; Wait for rising CLK + one full period
+
+rx_data:
+    in PINS, 4          [CLKDIV-2]         ; Sample 4 data bits (D0-D3)
+    jmp X--, rx_data
+
+
+; ─────────────────────────────────────────────────────────────────────────────
+; State Machine 1 (alternate) — sdio_data_tx
+;
+; Transmits a 4-bit wide SDIO data block.
+; Before starting: pindirs set to output, X = nibble_count - 1 (typically 1048),
+;                  Y = card_response_bits - 1 (typically 31).
+; TX FIFO format:
+;   Word 0   : start token 0xFFFFFFF0
+;   Words 1-128: 512 bytes of payload
+;   Words 129-130: 64-bit CRC (8 bytes)
+;   Word 131 : end token 0xFFFFFFFF
+; After card goes idle, RX FIFO receives D0 line response.
+; ─────────────────────────────────────────────────────────────────────────────
+.program sdio_data_tx
+    wait 0 pin SDIO_CLK_PIN_D0_OFFSET
+    wait 1 pin SDIO_CLK_PIN_D0_OFFSET  [CLKDIV + D1 - 1]  ; Sync to falling edge
+
+tx_loop:
+    out PINS, 4         [D0]               ; Write nibble, hold for half clock
+    jmp X-- tx_loop     [D1]               ; Decrement nibble counter
+
+    set pindirs, 0x00   [D0]               ; Release data bus (input)
+
+.wrap_target
+response_loop:
+    in PINS, 1          [D1]               ; Sample D0 on rising CLK
+    jmp Y--, response_loop  [D0]
+
+wait_idle:
+    wait 1 pin 0        [D1]               ; Wait for card BUSY to clear (D0 = 1)
+    push                [D0]               ; Push response token to RX FIFO
+.wrap
