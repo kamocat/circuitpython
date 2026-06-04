@@ -23,6 +23,7 @@
 #include "shared-bindings/busio/SPI.h"
 #include "shared-bindings/digitalio/DigitalInOut.h"
 #include "shared-bindings/asdcardio/ASdCard.h"
+#include "shared-bindings/asdcardio/WriteStream.h"
 #include "shared-bindings/time/__init__.h"
 #include "shared-bindings/util.h"
 #include "py/mperrno.h"
@@ -53,6 +54,7 @@
 #define CMD_TIMEOUT         (200)
 #define READY_TIMEOUT_NS    (300 * 1000 * 1000)  // 300 ms
 #define WRITE_TIMEOUT_NS    (1000 * 1000 * 1000) // 1 s — max card busy time
+#define READ_TOKEN_TIMEOUT_NS (300 * 1000 * 1000) // 300 ms — max wait for 0xFE start token
 
 #define R1_IDLE_STATE       (1 << 0)
 #define R1_ILLEGAL_COMMAND  (1 << 2)
@@ -388,7 +390,11 @@ int common_hal_asdcardio_asdcard_sync(asdcardio_asdcard_obj_t *self) {
 static int sync_readinto(asdcardio_asdcard_obj_t *self, void *buf) {
     uint8_t token = 0;
     // Wait for start-block token
+    uint64_t deadline = common_hal_time_monotonic_ns() + READ_TOKEN_TIMEOUT_NS;
     while (token != TOKEN_DATA) {
+        if (common_hal_time_monotonic_ns() > deadline) {
+            return -MP_ETIMEDOUT;
+        }
         common_hal_busio_spi_read(as_busio(self), &token, 1, 0xff);
     }
     common_hal_busio_spi_read(as_busio(self), buf, 512, 0xff);
@@ -566,15 +572,22 @@ void *common_hal_asdcardio_asdcard_readblocks_start(circuitpy_async_flag_t *flag
     } else {
         r = block_cmd(card, 18, start_block, NULL, 0, false, true);
     }
-    if (r < 0) {
+    if (r != 0) {
         extraclock_and_unlock_bus(card);
-        mp_raise_OSError(-r);
+        mp_raise_OSError(r < 0 ? -r : MP_EIO);
     }
 
     // Poll for 0xFE start-block token (synchronous — typically < 1 ms)
-    uint8_t token = 0;
-    while (token != TOKEN_DATA) {
-        common_hal_busio_spi_read(as_busio(card), &token, 1, 0xff);
+    {
+        uint8_t token = 0;
+        uint64_t deadline = common_hal_time_monotonic_ns() + READ_TOKEN_TIMEOUT_NS;
+        while (token != TOKEN_DATA) {
+            if (common_hal_time_monotonic_ns() > deadline) {
+                extraclock_and_unlock_bus(card);
+                mp_raise_OSError(MP_ETIMEDOUT);
+            }
+            common_hal_busio_spi_read(as_busio(card), &token, 1, 0xff);
+        }
     }
 
     // Kick off first DMA transfer for this block
@@ -602,9 +615,16 @@ mp_obj_t common_hal_asdcardio_asdcard_readblocks_end(void *raw_ctx) {
     if (ctx->nblocks > 0) {
         // More blocks remain in a CMD18 transfer.
         // Poll for next 0xFE token (synchronous)
-        uint8_t token = 0;
-        while (token != TOKEN_DATA) {
-            common_hal_busio_spi_read(as_busio(card), &token, 1, 0xff);
+        {
+            uint8_t token = 0;
+            uint64_t deadline = common_hal_time_monotonic_ns() + READ_TOKEN_TIMEOUT_NS;
+            while (token != TOKEN_DATA) {
+                if (common_hal_time_monotonic_ns() > deadline) {
+                    extraclock_and_unlock_bus(card);
+                    mp_raise_OSError(MP_ETIMEDOUT);
+                }
+                common_hal_busio_spi_read(as_busio(card), &token, 1, 0xff);
+            }
         }
         // Re-arm flag and start next DMA block
         ctx->block++;
@@ -677,18 +697,25 @@ void *common_hal_asdcardio_asdcard_writeblocks_start(circuitpy_async_flag_t *fla
     // Use CMD25 (multi-block write) for nblocks > 1 — the SD card can pipeline
     // sector programming across an erase unit, reducing busy-wait latency vs
     // N × CMD24.  Single-block writes still use CMD24 for simplicity.
+    //
+    // ACMD23 (SET_WR_BLK_ERASE_COUNT) hints to the card how many blocks will
+    // follow, allowing it to pre-erase exactly that many sectors before
+    // programming.  Errors are silently ignored — it is purely advisory and
+    // unsupported cards return R1_ILLEGAL_COMMAND.
     int r;
     uint8_t token;
     if (nblocks > 1) {
+        sd_cmd(card, 55, 0, NULL, 0, false, true);     // APP_CMD prefix
+        sd_cmd(card, 23, nblocks, NULL, 0, false, true); // ACMD23 erase hint
         r = block_cmd(card, 25, ctx->block, NULL, 0, false, true);
         token = TOKEN_CMD25;   // 0xFC — CMD25 data-block start token
     } else {
         r = block_cmd(card, 24, ctx->block, NULL, 0, false, true);
         token = TOKEN_DATA;    // 0xFE — CMD24 data token
     }
-    if (r < 0) {
+    if (r != 0) {
         extraclock_and_unlock_bus(card);
-        mp_raise_OSError(-r);
+        mp_raise_OSError(r < 0 ? -r : MP_EIO);
     }
     common_hal_busio_spi_write(as_busio(card), &token, 1);
 
@@ -886,6 +913,309 @@ void common_hal_asdcardio_asdcard_writeblocks_cancel(void *raw_ctx) {
         ctx->abusio_ctx = NULL;
     }
     extraclock_and_unlock_bus(ctx->card);
+}
+
+// ---- WriteStream: open_write_stream -----------------------------------------
+//
+// Synchronous: lock the bus, optionally issue ACMD23, then send CMD25.
+// Returns a heap-allocated asdcardio_write_stream_obj_t with the bus held.
+// Raises OSError(EAGAIN) if the bus cannot be locked immediately.
+
+asdcardio_write_stream_obj_t *common_hal_asdcardio_asdcard_open_write_stream(
+    asdcardio_asdcard_obj_t *card,
+    uint32_t start_block,
+    uint32_t hint_blocks) {
+
+    if (!lock_and_configure_bus(card)) {
+        mp_raise_OSError(EAGAIN);
+    }
+
+    // ACMD23: pre-erase hint (CMD55 + ACMD23).  Errors silently ignored.
+    if (hint_blocks > 0) {
+        sd_cmd(card, 55, 0, NULL, 0, false, true);
+        sd_cmd(card, 23, (int)hint_blocks, NULL, 0, false, true);
+    }
+
+    // CMD25 — multi-block write
+    int r = block_cmd(card, 25, start_block, NULL, 0, false, true);
+    if (r < 0) {
+        extraclock_and_unlock_bus(card);
+        mp_raise_OSError(-r);
+    }
+
+    asdcardio_write_stream_obj_t *stream = mp_obj_malloc(
+        asdcardio_write_stream_obj_t, &asdcardio_WriteStream_type);
+    stream->card = card;
+    stream->next_block = start_block;
+    stream->is_open = true;
+    // Bus remains locked and CS asserted — held by the stream.
+    return stream;
+}
+
+// ---- WriteStream: write -----------------------------------------------------
+//
+// data is a 2-tuple: (write_stream_obj, buf_memoryview).
+// The bus is already held (locked + CS asserted) from open_write_stream or a
+// prior write_end().  We send TOKEN_CMD25 then DMA each 512-byte block.
+// BUSY_WAIT phases do release the bus so other tasks can use SPI.
+// On successful completion the bus is still held for the next write() or close().
+
+void *common_hal_asdcardio_write_stream_write_start(
+    circuitpy_async_flag_t *flag, mp_obj_t data) {
+
+    mp_obj_t *items;
+    size_t len;
+    mp_obj_tuple_get(data, &len, &items);
+    asdcardio_write_stream_obj_t *stream = MP_OBJ_TO_PTR(items[0]);
+    asdcardio_asdcard_obj_t *card = stream->card;
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(items[1], &bufinfo, MP_BUFFER_READ);
+
+    uint32_t nblocks = bufinfo.len / 512;
+    uint64_t t0 = common_hal_time_monotonic_ns();
+
+    asdcardio_transfer_ctx_t *ctx = m_new_obj(asdcardio_transfer_ctx_t);
+    ctx->card = card;
+    ctx->flag = flag;
+    ctx->buf = (uint8_t *)bufinfo.buf;
+    ctx->block = stream->next_block;
+    ctx->nblocks = nblocks;
+    ctx->total_blocks = nblocks;
+    ctx->is_write = true;
+    ctx->abusio_ctx = NULL;
+    // Store stream pointer in abusio_data slot (GC-traced, not a tuple here).
+    ctx->abusio_data = MP_OBJ_FROM_PTR(stream);
+    ctx->t_start = t0;
+    ctx->blocking_ns = 0;
+    ctx->busy_polls = 0;
+
+    // Send TOKEN_CMD25 for the first block — bus is already locked.
+    uint8_t token = TOKEN_CMD25;
+    common_hal_busio_spi_write(as_busio(card), &token, 1);
+
+    // Kick off first DMA write.
+    ctx->phase = ASDCARD_PHASE_DMA;
+    mp_obj_t wdata = make_write_data(card, ctx->buf);
+    ctx->abusio_ctx = common_hal_abusio_spi_write_start(flag, wdata);
+
+    ctx->blocking_ns = common_hal_time_monotonic_ns() - t0;
+    return ctx;
+}
+
+// Write-stream end(): same DMA/CRC/BUSY_WAIT logic as writeblocks_end(), but:
+//   - no STOP_TRAN at the end — the CMD25 session stays open
+//   - stream->next_block is updated on completion
+//   - bus remains locked after all blocks are done
+static mp_obj_t write_stream_advance(asdcardio_transfer_ctx_t *ctx) {
+    asdcardio_asdcard_obj_t *card = ctx->card;
+    asdcardio_write_stream_obj_t *stream = MP_OBJ_TO_PTR(ctx->abusio_data);
+    ctx->buf += 512;
+    ctx->block++;
+    ctx->nblocks--;
+
+    if (ctx->nblocks > 0) {
+        // More blocks — send next TOKEN_CMD25 and start DMA.
+        uint8_t tok = TOKEN_CMD25;
+        common_hal_busio_spi_write(as_busio(card), &tok, 1);
+        mp_obj_t wdata = make_write_data(card, ctx->buf);
+        CIRCUITPY_ASYNC_FLAG_INIT(ctx->flag);
+        ctx->abusio_ctx = common_hal_abusio_spi_write_start(ctx->flag, wdata);
+        ctx->phase = ASDCARD_PHASE_DMA;
+        return MP_OBJ_NULL;
+    }
+
+    // All blocks written — update stream position; bus remains locked.
+    stream->next_block = ctx->block;
+    return mp_const_none;
+}
+
+mp_obj_t common_hal_asdcardio_write_stream_write_end(void *raw_ctx) {
+    asdcardio_transfer_ctx_t *ctx = raw_ctx;
+    asdcardio_asdcard_obj_t *card = ctx->card;
+    uint64_t t0 = common_hal_time_monotonic_ns();
+    mp_obj_t result;
+
+    // ── STOP_WAIT is not used by write_stream (no STOP_TRAN mid-stream) ──────
+    // ── BUSY_WAIT: card is programming; bus released between polls ───────────
+    if (ctx->phase == ASDCARD_PHASE_BUSY_WAIT) {
+        if (!lock_and_configure_bus(card)) {
+            ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+            return MP_OBJ_NULL;
+        }
+        uint8_t b;
+        common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff);
+        ctx->busy_polls++;
+        if (b == 0x00) {
+            if (common_hal_time_monotonic_ns() > ctx->busy_deadline) {
+                extraclock_and_unlock_bus(card);
+                mp_raise_OSError(MP_ETIMEDOUT);
+            }
+            cs_deassert(card);
+            common_hal_busio_spi_unlock(as_busio(card));
+            ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+            return MP_OBJ_NULL;
+        }
+        // Ready — bus locked, CS asserted — advance to next block.
+        result = write_stream_advance(ctx);
+        ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+        return result;
+    }
+
+    // ── DMA phase ─────────────────────────────────────────────────────────────
+    common_hal_abusio_spi_write_end(ctx->abusio_ctx);
+    ctx->abusio_ctx = NULL;
+
+    uint8_t crc[2] = {0xff, 0xff};
+    common_hal_busio_spi_write(as_busio(card), crc, 2);
+
+    uint8_t resp = 0;
+    for (int i = 0; i < CMD_TIMEOUT; i++) {
+        common_hal_busio_spi_read(as_busio(card), &resp, 1, 0xff);
+        if ((resp & 0x11) == 0x01) {
+            break;
+        }
+    }
+    if ((resp & 0x1f) != 0x05) {
+        extraclock_and_unlock_bus(card);
+        mp_raise_OSError(MP_EIO);
+    }
+
+    uint8_t b;
+    common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff);
+    if (b == 0x00) {
+        ctx->busy_deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
+        ctx->phase = ASDCARD_PHASE_BUSY_WAIT;
+        cs_deassert(card);
+        common_hal_busio_spi_unlock(as_busio(card));
+        ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+        return MP_OBJ_NULL;
+    }
+
+    result = write_stream_advance(ctx);
+    ctx->blocking_ns += common_hal_time_monotonic_ns() - t0;
+    return result;
+}
+
+void common_hal_asdcardio_write_stream_write_cancel(void *raw_ctx) {
+    asdcardio_transfer_ctx_t *ctx = raw_ctx;
+    if (ctx->phase == ASDCARD_PHASE_BUSY_WAIT) {
+        return; // bus already released
+    }
+    if (ctx->abusio_ctx) {
+        common_hal_abusio_spi_write_cancel(ctx->abusio_ctx);
+        ctx->abusio_ctx = NULL;
+    }
+    // Do NOT send STOP_TRAN here — stream close() handles that.
+    // Simply release the bus.
+    extraclock_and_unlock_bus(ctx->card);
+    asdcardio_write_stream_obj_t *stream = MP_OBJ_TO_PTR(ctx->abusio_data);
+    stream->is_open = false;
+}
+
+// ---- WriteStream: close -----------------------------------------------------
+//
+// data is the write_stream_obj itself (mp_obj_t).
+// Sends TOKEN_STOP_TRAN, polls busy, releases bus, marks stream closed.
+
+typedef struct {
+    asdcardio_asdcard_obj_t *card;
+    asdcardio_write_stream_obj_t *stream;
+    asdcard_phase_t phase;
+    uint64_t busy_deadline;
+} asdcardio_close_ctx_t;
+
+void *common_hal_asdcardio_write_stream_close_start(
+    circuitpy_async_flag_t *flag, mp_obj_t data) {
+    // close() uses polling (no DMA), so signal the awaitable immediately so
+    // that close_end() is called on the first iteration.  close_end() returns
+    // MP_OBJ_NULL (yield) while the card is still busy; the flag stays set
+    // across those yields so end() keeps getting called until the card is idle.
+    CIRCUITPY_ASYNC_FLAG_SET(flag);
+
+    asdcardio_write_stream_obj_t *stream = MP_OBJ_TO_PTR(data);
+    asdcardio_asdcard_obj_t *card = stream->card;
+
+    if (!stream->is_open) {
+        // Already closed — return a trivial ctx that close_end immediately
+        // completes (phase IDLE = done).
+        asdcardio_close_ctx_t *ctx = m_new_obj(asdcardio_close_ctx_t);
+        ctx->card = card;
+        ctx->stream = stream;
+        ctx->phase = ASDCARD_PHASE_IDLE;
+        return ctx;
+    }
+
+    // Bus should still be held from write_stream (or we need to re-acquire if
+    // the last write ended in BUSY_WAIT and released the bus).
+    bool had_lock = common_hal_busio_spi_has_lock(as_busio(card));
+    if (!had_lock) {
+        if (!lock_and_configure_bus(card)) {
+            mp_raise_OSError(EAGAIN);
+        }
+    }
+
+    uint8_t stop = TOKEN_STOP_TRAN; // 0xFD
+    common_hal_busio_spi_write(as_busio(card), &stop, 1);
+    uint8_t b;
+    common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff); // Nec stuff byte
+    common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff); // first busy sample
+
+    asdcardio_close_ctx_t *ctx = m_new_obj(asdcardio_close_ctx_t);
+    ctx->card = card;
+    ctx->stream = stream;
+
+    if (b == 0x00) {
+        ctx->busy_deadline = common_hal_time_monotonic_ns() + WRITE_TIMEOUT_NS;
+        ctx->phase = ASDCARD_PHASE_STOP_WAIT;
+        cs_deassert(card);
+        common_hal_busio_spi_unlock(as_busio(card));
+    } else {
+        // Card already idle — release and done.
+        extraclock_and_unlock_bus(card);
+        stream->is_open = false;
+        ctx->phase = ASDCARD_PHASE_IDLE;
+    }
+    return ctx;
+}
+
+mp_obj_t common_hal_asdcardio_write_stream_close_end(void *raw_ctx) {
+    asdcardio_close_ctx_t *ctx = raw_ctx;
+    asdcardio_asdcard_obj_t *card = ctx->card;
+
+    if (ctx->phase == ASDCARD_PHASE_IDLE) {
+        return mp_const_none; // already done
+    }
+
+    // STOP_WAIT — poll until card releases DO.
+    if (!lock_and_configure_bus(card)) {
+        return MP_OBJ_NULL; // yield and retry
+    }
+    uint8_t b;
+    common_hal_busio_spi_read(as_busio(card), &b, 1, 0xff);
+    if (b == 0x00) {
+        if (common_hal_time_monotonic_ns() > ctx->busy_deadline) {
+            extraclock_and_unlock_bus(card);
+            mp_raise_OSError(MP_ETIMEDOUT);
+        }
+        cs_deassert(card);
+        common_hal_busio_spi_unlock(as_busio(card));
+        return MP_OBJ_NULL;
+    }
+    extraclock_and_unlock_bus(card);
+    ctx->stream->is_open = false;
+    ctx->phase = ASDCARD_PHASE_IDLE;
+    return mp_const_none;
+}
+
+void common_hal_asdcardio_write_stream_close_cancel(void *raw_ctx) {
+    asdcardio_close_ctx_t *ctx = raw_ctx;
+    if (ctx->phase == ASDCARD_PHASE_STOP_WAIT) {
+        return; // bus already released
+    }
+    if (ctx->phase != ASDCARD_PHASE_IDLE) {
+        extraclock_and_unlock_bus(ctx->card);
+    }
+    ctx->stream->is_open = false;
 }
 
 #endif // MICROPY_PY_ASYNC_AWAIT

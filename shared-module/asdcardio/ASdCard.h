@@ -71,6 +71,38 @@ mp_rom_error_text_t asdcardio_asdcard_construct(
     int baudrate,
     bool persistent_mount);
 
+// ---- WriteStream ------------------------------------------------------------
+//
+// An open CMD25 session that keeps the SPI bus locked and CS asserted between
+// consecutive write() calls.  Created by ASdCard.open_write_stream().
+//
+// BUSY_WAIT phases (card is programming) do release the bus so that other
+// tasks can use the SPI bus while the flash cell settles.
+
+typedef struct {
+    mp_obj_base_t base;
+    asdcardio_asdcard_obj_t *card;   // back-pointer (not owned; must outlive stream)
+    uint32_t next_block;             // next sequential SD block address to write
+    bool is_open;                    // false after close()
+} asdcardio_write_stream_obj_t;
+
+// Synchronous: open a CMD25 session.  Returns heap-allocated write_stream_obj.
+// Raises OSError(EAGAIN) if the bus is busy.  hint_blocks > 0 triggers ACMD23.
+asdcardio_write_stream_obj_t *common_hal_asdcardio_asdcard_open_write_stream(
+    asdcardio_asdcard_obj_t *card,
+    uint32_t start_block,
+    uint32_t hint_blocks);
+
+// Async write callbacks — data is a 2-tuple (write_stream_obj, buf_memoryview).
+void *common_hal_asdcardio_write_stream_write_start(circuitpy_async_flag_t *flag, mp_obj_t data);
+mp_obj_t common_hal_asdcardio_write_stream_write_end(void *ctx);
+void common_hal_asdcardio_write_stream_write_cancel(void *ctx);
+
+// Async close callbacks — data is the write_stream_obj itself (mp_obj_t).
+void *common_hal_asdcardio_write_stream_close_start(circuitpy_async_flag_t *flag, mp_obj_t data);
+mp_obj_t common_hal_asdcardio_write_stream_close_end(void *ctx);
+void common_hal_asdcardio_write_stream_close_cancel(void *ctx);
+
 // common_hal functions called from shared-bindings.
 void common_hal_asdcardio_asdcard_construct(
     asdcardio_asdcard_obj_t *self,

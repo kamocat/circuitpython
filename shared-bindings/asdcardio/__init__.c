@@ -9,6 +9,7 @@
 
 #include "shared-bindings/asdcardio/__init__.h"
 #include "shared-bindings/asdcardio/ASdCard.h"
+#include "shared-bindings/asdcardio/WriteStream.h"
 
 //| """Async SD card block device using DMA-backed SPI transfers.
 //|
@@ -32,8 +33,11 @@
 //| """
 
 static const mp_rom_map_elem_t asdcardio_module_globals_table[] = {
-    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_asdcardio) },
-    { MP_ROM_QSTR(MP_QSTR_ASdCard),  MP_ROM_PTR(&asdcardio_ASdCard_type) },
+    { MP_ROM_QSTR(MP_QSTR___name__),    MP_ROM_QSTR(MP_QSTR_asdcardio) },
+    { MP_ROM_QSTR(MP_QSTR_ASdCard),     MP_ROM_PTR(&asdcardio_ASdCard_type) },
+    #if MICROPY_PY_ASYNC_AWAIT
+    { MP_ROM_QSTR(MP_QSTR_WriteStream), MP_ROM_PTR(&asdcardio_WriteStream_type) },
+    #endif
 };
 static MP_DEFINE_CONST_DICT(asdcardio_module_globals, asdcardio_module_globals_table);
 

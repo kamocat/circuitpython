@@ -11,6 +11,7 @@
 #include "py/circuitpy_objawaitable.h"
 
 #include "shared-bindings/asdcardio/ASdCard.h"
+#include "shared-bindings/asdcardio/WriteStream.h"
 #include "shared-bindings/abusio/SPI.h"
 #include "shared-bindings/microcontroller/Pin.h"
 #include "shared-bindings/util.h"
@@ -226,15 +227,44 @@ static mp_obj_t asdcardio_sdcard_py_writeblocks(mp_obj_t self_in,
 static MP_DEFINE_CONST_FUN_OBJ_3(asdcardio_asdcard_writeblocks_obj,
     asdcardio_sdcard_py_writeblocks);
 
+// ---- open_write_stream ------------------------------------------------------
+
+//|     def open_write_stream(self, start_block: int, hint_blocks: int = 0) -> WriteStream:
+//|         """Open a persistent CMD25 write session starting at *start_block*.
+//|
+//|         Locks the SPI bus and sends CMD25 immediately.  Subsequent calls to
+//|         ``WriteStream.write()`` send data tokens without re-issuing the command,
+//|         dramatically reducing per-write overhead for streaming data.
+//|
+//|         :param int start_block: First SD block to write.
+//|         :param int hint_blocks: If > 0, sends ACMD23 to pre-erase this many
+//|             blocks before the write session.  Silently ignored by cards that
+//|             do not support ACMD23.
+//|         :returns: :class:`WriteStream`
+//|         :raises OSError: if the bus cannot be locked (EAGAIN).
+//|         """
+//|         ...
+//|
+static mp_obj_t asdcardio_asdcard_open_write_stream(size_t n_args, const mp_obj_t *args) {
+    asdcardio_asdcard_obj_t *self = check_self(args[0]);
+    uint32_t start_block = (uint32_t)mp_obj_get_int(args[1]);
+    uint32_t hint_blocks = (n_args >= 3) ? (uint32_t)mp_obj_get_int(args[2]) : 0;
+    return MP_OBJ_FROM_PTR(
+        common_hal_asdcardio_asdcard_open_write_stream(self, start_block, hint_blocks));
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(asdcardio_asdcard_open_write_stream_obj, 2, 3,
+    asdcardio_asdcard_open_write_stream);
+
 // ---- type definition --------------------------------------------------------
 
 static const mp_rom_map_elem_t asdcardio_asdcard_locals_dict_table[] = {
-    { MP_ROM_QSTR(MP_QSTR_count),       MP_ROM_PTR(&asdcardio_asdcard_count_obj) },
-    { MP_ROM_QSTR(MP_QSTR_deinit),      MP_ROM_PTR(&asdcardio_asdcard_deinit_obj) },
-    { MP_ROM_QSTR(MP_QSTR___del__),     MP_ROM_PTR(&asdcardio_asdcard_deinit_obj) },
-    { MP_ROM_QSTR(MP_QSTR_sync),        MP_ROM_PTR(&asdcardio_asdcard_sync_obj) },
-    { MP_ROM_QSTR(MP_QSTR_readblocks),  MP_ROM_PTR(&asdcardio_asdcard_readblocks_obj) },
-    { MP_ROM_QSTR(MP_QSTR_writeblocks), MP_ROM_PTR(&asdcardio_asdcard_writeblocks_obj) },
+    { MP_ROM_QSTR(MP_QSTR_count),            MP_ROM_PTR(&asdcardio_asdcard_count_obj) },
+    { MP_ROM_QSTR(MP_QSTR_deinit),           MP_ROM_PTR(&asdcardio_asdcard_deinit_obj) },
+    { MP_ROM_QSTR(MP_QSTR___del__),          MP_ROM_PTR(&asdcardio_asdcard_deinit_obj) },
+    { MP_ROM_QSTR(MP_QSTR_sync),             MP_ROM_PTR(&asdcardio_asdcard_sync_obj) },
+    { MP_ROM_QSTR(MP_QSTR_readblocks),       MP_ROM_PTR(&asdcardio_asdcard_readblocks_obj) },
+    { MP_ROM_QSTR(MP_QSTR_writeblocks),      MP_ROM_PTR(&asdcardio_asdcard_writeblocks_obj) },
+    { MP_ROM_QSTR(MP_QSTR_open_write_stream), MP_ROM_PTR(&asdcardio_asdcard_open_write_stream_obj) },
 };
 static MP_DEFINE_CONST_DICT(asdcardio_asdcard_locals_dict,
     asdcardio_asdcard_locals_dict_table);

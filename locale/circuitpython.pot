@@ -695,8 +695,8 @@ msgstr ""
 #: ports/cxd56/common-hal/sdioio/SDCard.c
 #: ports/espressif/common-hal/sdioio/SDCard.c
 #: ports/stm/common-hal/sdioio/SDCard.c shared-bindings/asdcardio/ASdCard.c
-#: shared-bindings/asdioio/ASDioCard.c shared-bindings/floppyio/__init__.c
-#: shared-module/sdcardio/SDCard.c
+#: shared-bindings/asdcardio/WriteStream.c shared-bindings/asdioio/ASDioCard.c
+#: shared-bindings/floppyio/__init__.c shared-module/sdcardio/SDCard.c
 #, c-format
 msgid "Buffer must be a multiple of %d bytes"
 msgstr ""
@@ -2482,6 +2482,10 @@ msgstr ""
 
 #: main.c
 msgid "Woken up by alarm.\n"
+msgstr ""
+
+#: shared-bindings/asdcardio/WriteStream.c
+msgid "WriteStream is closed"
 msgstr ""
 
 #: ports/espressif/common-hal/_bleio/PacketBuffer.c

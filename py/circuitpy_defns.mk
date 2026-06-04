@@ -796,6 +796,7 @@ SRC_SHARED_MODULE_ALL = \
 	sdcardio/__init__.c \
 	asdcardio/ASdCard.c \
 	asdcardio/__init__.c \
+	asdcardio/WriteStream.c \
 	sharpdisplay/SharpMemoryFramebuffer.c \
 	sharpdisplay/__init__.c \
 	socket/__init__.c \

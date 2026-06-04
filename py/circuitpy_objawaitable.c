@@ -17,9 +17,12 @@ extern mp_obj_t mp_asyncio_context;
 static mp_obj_t awaitable_iternext(mp_obj_t self_in) {
     circuitpy_awaitable_obj_t *self = MP_OBJ_TO_PTR(self_in);
     if (!self->started) {
-        self->started = true;
+        // Set started *after* start() returns so that if start() raises via NLR
+        // we don't leave started=true with context=NULL.  awaitable_del would
+        // otherwise call cancel(NULL) during GC teardown and crash.
         CIRCUITPY_ASYNC_FLAG_INIT(&self->flag);
         self->context = self->start(&self->flag, self->data);
+        self->started = true;
     }
     if (!CIRCUITPY_ASYNC_FLAG_IS_SET(&self->flag)) {
         // asyncio's run_until_complete does NOT auto-reschedule after send() returns —
