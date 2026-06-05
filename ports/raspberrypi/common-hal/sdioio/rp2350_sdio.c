@@ -34,9 +34,14 @@ static inline uint64_t sdio_millis(void) {
     return common_hal_time_monotonic_ms();
 }
 
-#define SDIO_TIMEOUT_CMD_MS   500u
-#define SDIO_TIMEOUT_DATA_MS  2000u
-#define SDIO_TIMEOUT_WRITE_MS 5000u
+// Per SD spec, NCR (command response time) is 64 CLK cycles max at 400 kHz
+// init speed = 0.16 ms.  Use 1 ms to give generous margin for slow cards;
+// this is the per-attempt ceiling, not the total init time.
+// Note: ACMD41 polls rely on this — a lower value means tighter retry loops
+// during card power-up (the outer deadline in SDCard.c is the real 2s limit).
+#define SDIO_TIMEOUT_CMD_MS   1u
+#define SDIO_TIMEOUT_DATA_MS  100u
+#define SDIO_TIMEOUT_WRITE_MS 100u
 
 // ---------------------------------------------------------------------------
 // CRC-7 lookup table (used in command packets).
@@ -127,6 +132,11 @@ static void sdio_send_command(rp2350_sdio_state_t *s,
     // Insert CRC into word1[15:8]: CRC value in bits [7:1], end-bit in bit 0.
     word1 = (word1 & 0xFFFF00FFu) | ((uint32_t)(crc | 1) << 8);
 
+    // The PIO program has no .wrap directive, so it uses the default: wrap from
+    // the last instruction (resp_done: push) back to instruction 0 (mov OSR, NULL).
+    // OSR is therefore always pre-filled with zeros before wait_cmd — after every
+    // successful command via the program wrap, and after timeout recovery via the
+    // explicit `jmp 0`.  No dummy word is ever needed.
     pio_sm_clear_fifos(s->pio, s->cmd_sm);
     pio_sm_put(s->pio, s->cmd_sm, word0);
     pio_sm_put(s->pio, s->cmd_sm, word1);
@@ -667,6 +677,28 @@ void rp2350_sdio_deinit(rp2350_sdio_state_t *s) {
     if (!s->resources_claimed) {
         return;
     }
+
+    // Best-effort CMD0: reset the SD card to idle state before stopping the
+    // clock.  This ensures the card is in a known idle state when CLK goes
+    // away, preventing it from misinterpreting a floating CLK as phantom
+    // clock edges and ending up in a confused state on the next init.
+    {
+        uint32_t word0 = (47u << 24) | (1u << 22); // CMD0, arg=0
+        uint32_t word1 = (1u << 8);               // end-bit
+        // CRC7(0x40,0,0,0,0) = 0x4A; crc|1 = 0x95
+        word1 = (word1 & 0xFFFF00FFu) | ((uint32_t)(0x95u) << 8);
+        pio_sm_clear_fifos(s->pio, s->cmd_sm);
+        pio_sm_put(s->pio, s->cmd_sm, word0);
+        pio_sm_put(s->pio, s->cmd_sm, word1);
+        // Wait for the TX FIFO to drain (command sent) — max ~2ms at 400 kHz.
+        uint64_t t = sdio_millis() + 5;
+        while (pio_sm_get_tx_fifo_level(s->pio, s->cmd_sm) > 0 &&
+               sdio_millis() < t) {
+        }
+        // Let CLK run a bit longer so the card fully receives CMD0.
+        common_hal_time_delay_ms(2);
+    }
+
     rp2350_sdio_stop(s);
     pio_sm_set_enabled(s->pio, s->cmd_sm, false);
     pio_sm_unclaim(s->pio, s->cmd_sm);
@@ -674,13 +706,26 @@ void rp2350_sdio_deinit(rp2350_sdio_state_t *s) {
     dma_channel_unclaim((uint)s->dma_ch);
     dma_channel_unclaim((uint)s->dma_chb);
 
-    // Reset GPIO functions.
+    // Reset GPIO functions and direction to input (GPIO_FUNC_NULL keeps the
+    // pin as GPIO but leaves output-enable set from PIO — call gpio_init() to
+    // clear OE and return each pin to a safe floating input state).
     gpio_set_function(s->cmd_gpio,       GPIO_FUNC_NULL);
     gpio_set_function(s->clk_gpio,       GPIO_FUNC_NULL);
     gpio_set_function(s->d0_gpio,        GPIO_FUNC_NULL);
     gpio_set_function(s->d0_gpio + 1,    GPIO_FUNC_NULL);
     gpio_set_function(s->d0_gpio + 2,    GPIO_FUNC_NULL);
     gpio_set_function(s->d0_gpio + 3,    GPIO_FUNC_NULL);
+
+    // Drive CLK LOW (not floating) to prevent the SD card from seeing phantom
+    // clock edges due to capacitive coupling on an undriven pin.  The other
+    // pins revert to safe floating inputs via gpio_init().
+    gpio_init(s->cmd_gpio);
+    gpio_set_dir(s->clk_gpio, true);   // output
+    gpio_put(s->clk_gpio, 0);          // CLK LOW
+    gpio_init(s->d0_gpio);
+    gpio_init(s->d0_gpio + 1);
+    gpio_init(s->d0_gpio + 2);
+    gpio_init(s->d0_gpio + 3);
 
     s->resources_claimed = false;
 }

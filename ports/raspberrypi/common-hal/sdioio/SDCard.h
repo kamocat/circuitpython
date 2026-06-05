@@ -25,4 +25,10 @@ typedef struct {
 
     bool deinited;
     bool never_reset_flag;
+
+    // GPIO numbers of the claimed pins (for reset_pin_number on deinit).
+    uint8_t clk_pin_no;
+    uint8_t cmd_pin_no;
+    uint8_t d0_pin_no;   // D1-D3 are d0_pin_no+1..+3
+    uint8_t num_data;
 } sdioio_sdcard_obj_t;
