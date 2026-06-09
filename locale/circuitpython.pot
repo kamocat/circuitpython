@@ -742,6 +742,11 @@ msgstr ""
 msgid "CIRCUITPY drive could not be found or created."
 msgstr ""
 
+#: ports/raspberrypi/common-hal/sdioio/SDCard.c
+#, c-format
+msgid "CLK pin must be %d (D0-2 mod 32)"
+msgstr ""
+
 #: ports/espressif/common-hal/espidf/__init__.c
 msgid "CRC or checksum was invalid"
 msgstr ""
@@ -925,6 +930,10 @@ msgstr ""
 #: ports/espressif/common-hal/_bleio/Adapter.c
 #: ports/nordic/common-hal/_bleio/Adapter.c
 msgid "Data not supported with directed advertising"
+msgstr ""
+
+#: ports/raspberrypi/common-hal/sdioio/SDCard.c
+msgid "Data pins must be consecutive D0, D0+1, D0+2, D0+3"
 msgstr ""
 
 #: ports/espressif/common-hal/_bleio/Adapter.c
